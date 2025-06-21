@@ -16,6 +16,10 @@
 #include "time_zone_info.h"
 #include "time_zone_libc.h"
 
+#if defined(_WIN32)
+#include "time_zone_icu_win.h"
+#endif  // defined(_WIN32)
+
 namespace cctz {
 
 std::unique_ptr<TimeZoneIf> TimeZoneIf::UTC() {

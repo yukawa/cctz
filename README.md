@@ -15,13 +15,12 @@ zones in a simple and correct manner. The libraries in CCTZ are:
     and *civil time*. This library is declared in
     [`include/cctz/time_zone.h`](https://github.com/google/cctz/blob/master/include/cctz/time_zone.h).
 
-These libraries are currently known to work on **Linux**, **Mac OS X**, and
-**Android**.
+These libraries are currently known to work on **Linux**, **Mac OS X**,
+**Android**, and **Windows** (Windows 10 Version 1903 and later versions).
 
-They will also work on **Windows** if you install the zoneinfo files. We are
-interested, though, in an implementation of the cctz::TimeZoneIf interface that
-calls the Windows time APIs instead. Please contact us if you're interested in
-contributing.
+Note that **Windows** implementation first tries to load the IANA time zone
+database from `TZDATA` environment variable then falls back to time zone
+database bundled in `icu.dll`.
 
 # Getting Started
 
