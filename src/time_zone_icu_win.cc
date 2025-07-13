@@ -27,7 +27,6 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -550,34 +549,63 @@ bool IcuZoneInfoSource::GenerateTzData(const std::string& name) {
 
   // Build unique transition types and deduplicated abbreviations
   std::vector<TransitionType> types;
-  std::map<std::pair<int32_t, bool>, uint8_t> type_map;
   std::string abbr_string;
-  // Maps abbreviation to its index in abbr_string
-  std::map<std::string, uint8_t> abbr_map;
+  // Keep track of (start_index_in_abbr_string, length) for each abbreviation.
+  std::vector<std::pair<size_t, size_t>> abbr_range_map;
 
   for (const auto& trans : transitions) {
-    auto key = std::make_pair(trans.offset, trans.is_dst);
-    if (type_map.find(key) == type_map.end()) {
-      TransitionType type;
-      type.offset = trans.offset;
-      type.is_dst = trans.is_dst;
+    const auto key = std::make_pair(trans.offset, trans.is_dst);
 
-      // Check if abbreviation already exists
-      auto abbr_it = abbr_map.find(trans.abbr);
-      if (abbr_it != abbr_map.end()) {
-        // Reuse existing abbreviation
-        type.abbr_idx = abbr_it->second;
-      } else {
-        // Add new abbreviation
-        type.abbr_idx = static_cast<uint8_t>(abbr_string.size());
-        abbr_map[trans.abbr] = type.abbr_idx;
-        abbr_string += trans.abbr;
-        abbr_string += '\0';
+    bool type_found = false;
+    for (size_t type_index = 0; type_index < types.size(); ++type_index) {
+      const auto& type = types[type_index];
+      if (type.offset == trans.offset && type.is_dst == trans.is_dst) {
+        type_found = true;
+        break;
       }
-
-      type_map[key] = static_cast<uint8_t>(types.size());
-      types.push_back(type);
     }
+    if (type_found) {
+      continue;  // Skip if this type already exists
+    }
+
+    if (types.size() >= std::numeric_limits<uint8_t>::max()) {
+      return false;  // Too many types
+    }
+
+    TransitionType type;
+    type.offset = trans.offset;
+    type.is_dst = trans.is_dst;
+
+    // Check if abbreviation already exists
+    bool abbr_found = false;
+    for (size_t abbr_index = 0; abbr_index < abbr_range_map.size();
+        ++abbr_index) {
+      const auto& range = abbr_range_map[abbr_index];
+      if (range.second != trans.abbr.size()) {
+        continue;  // Length mismatch, skip
+      }
+      const int memcmp_result = std::memcmp(abbr_string.data() + range.first,
+                                            trans.abbr.data(), range.second);
+      if (memcmp_result == 0) {
+        type.abbr_idx = static_cast<uint8_t>(abbr_index);
+        abbr_found = true;
+        break;
+      }
+    }
+
+    if (!abbr_found) {
+      // Add new abbreviation
+      if (abbr_range_map.size() >= std::numeric_limits<uint8_t>::max()) {
+        return false;  // Too many abbreviations
+      }
+      type.abbr_idx = static_cast<uint8_t>(abbr_string.size());
+      abbr_range_map.push_back(
+          std::make_pair(abbr_string.size(), trans.abbr.size()));
+      abbr_string += trans.abbr;
+      abbr_string += '\0';
+    }
+
+    types.push_back(type);
   }
 
   // Build TZDATA binary format
@@ -623,9 +651,13 @@ bool IcuZoneInfoSource::GenerateTzData(const std::string& name) {
 
   // Write transition type indices
   for (const auto& trans : trans32) {
-    auto key = std::make_pair(trans.offset, trans.is_dst);
-    uint8_t type_idx = type_map[key];
-    data_.push_back(type_idx);
+    for (size_t type_index = 0; type_index < types.size(); ++type_index) {
+      const auto& type = types[type_index];
+      if (type.offset == trans.offset && type.is_dst == trans.is_dst) {
+        data_.push_back(type_index);
+        break;
+      }
+    }
   }
 
   // Write transition types
@@ -668,9 +700,13 @@ bool IcuZoneInfoSource::GenerateTzData(const std::string& name) {
 
   // Write transition type indices
   for (const auto& trans : transitions) {
-    auto key = std::make_pair(trans.offset, trans.is_dst);
-    uint8_t type_idx = type_map[key];
-    data_.push_back(type_idx);
+    for (size_t type_index = 0; type_index < types.size(); ++type_index) {
+      const auto& type = types[type_index];
+      if (type.offset == trans.offset && type.is_dst == trans.is_dst) {
+        data_.push_back(type_index);
+        break;
+      }
+    }
   }
 
   // Write transition types again
