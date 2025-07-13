@@ -193,40 +193,57 @@ struct IcuFunctions {
       }
     }
 
-    const HMODULE icudll =
-        ::LoadLibraryExW(L"icu.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-    if (icudll == nullptr) {
+    // Apps may have bundled their own "icu.dll" and already loaded it.
+    // To avoid such an "icu.dll" preloading issue, we must use the full path
+    // here. Keep in mind that LoadLibraryExW with LOAD_LIBRARY_SEARCH_SYSTEM32
+    // returns the preloaded "icu.dll" if exists.
+    std::wstring icu_dll_path;
+    {
+      const UINT size_with_null = ::GetSystemDirectoryW(nullptr, 0);
+      icu_dll_path.reserve(size_with_null + 8);  // +8 for the "\\icu.dll" part
+      icu_dll_path.resize(size_with_null);
+      const UINT size_without_null =
+          ::GetSystemDirectoryW(&icu_dll_path[0], size_with_null);
+      if (size_without_null >= icu_dll_path.size()) {
+        g_unavailable.store(true, std::memory_order_relaxed);
+        return IcuFunctions::Unavailable();
+      }
+      icu_dll_path.resize(size_without_null);
+      icu_dll_path.append(L"\\icu.dll");
+    }
+    const HMODULE icu_dll = ::LoadLibraryW(icu_dll_path.c_str());
+    if (icu_dll == nullptr) {
       g_unavailable.store(true, std::memory_order_relaxed);
       return IcuFunctions::Unavailable();
     }
 
     const auto ucal_closeRef = reinterpret_cast<ucal_close_func>(
-        ::GetProcAddress(icudll, "ucal_close"));
+        ::GetProcAddress(icu_dll, "ucal_close"));
     const auto ucal_getRef = reinterpret_cast<ucal_get_func>(
-        ::GetProcAddress(icudll, "ucal_get"));
+        ::GetProcAddress(icu_dll, "ucal_get"));
     const auto ucal_getCanonicalTimeZoneIDRef =
         reinterpret_cast<ucal_getCanonicalTimeZoneID_func>(
-            ::GetProcAddress(icudll, "ucal_getCanonicalTimeZoneID"));
+            ::GetProcAddress(icu_dll, "ucal_getCanonicalTimeZoneID"));
     const auto ucal_getTimeZoneDisplayNameRef =
         reinterpret_cast<ucal_getTimeZoneDisplayName_func>(
-            ::GetProcAddress(icudll, "ucal_getTimeZoneDisplayName"));
+            ::GetProcAddress(icu_dll, "ucal_getTimeZoneDisplayName"));
     const auto ucal_getTimeZoneTransitionDateRef =
         reinterpret_cast<ucal_getTimeZoneTransitionDate_func>(
-            ::GetProcAddress(icudll, "ucal_getTimeZoneTransitionDate"));
+            ::GetProcAddress(icu_dll, "ucal_getTimeZoneTransitionDate"));
     const auto ucal_getTZDataVersionRef =
         reinterpret_cast<ucal_getTZDataVersion_func>(
-            ::GetProcAddress(icudll, "ucal_getTZDataVersion"));
+            ::GetProcAddress(icu_dll, "ucal_getTZDataVersion"));
     const auto ucal_openRef = reinterpret_cast<ucal_open_func>(
-        ::GetProcAddress(icudll, "ucal_open"));
+        ::GetProcAddress(icu_dll, "ucal_open"));
     const auto ucal_setMillisRef = reinterpret_cast<ucal_setMillis_func>(
-        ::GetProcAddress(icudll, "ucal_setMillis"));
+        ::GetProcAddress(icu_dll, "ucal_setMillis"));
     const auto ucal_getMillisRef = reinterpret_cast<ucal_getMillis_func>(
-        ::GetProcAddress(icudll, "ucal_getMillis"));
+        ::GetProcAddress(icu_dll, "ucal_getMillis"));
     auto ucal_getHostTimeZoneRef = reinterpret_cast<ucal_getHostTimeZone_func>(
-        ::GetProcAddress(icudll, "ucal_getHostTimeZone"));
+        ::GetProcAddress(icu_dll, "ucal_getHostTimeZone"));
     const auto ucal_getTimeZoneIDForWindowsIDRef =
         reinterpret_cast<ucal_getTimeZoneIDForWindowsID_func>(
-            ::GetProcAddress(icudll, "ucal_getTimeZoneIDForWindowsID"));
+            ::GetProcAddress(icu_dll, "ucal_getTimeZoneIDForWindowsID"));
 
     if (!ucal_getHostTimeZoneRef) {
       // Note: ucal_getHostTimeZone can not be unavailable on older Windows.
