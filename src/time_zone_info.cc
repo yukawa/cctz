@@ -847,7 +847,7 @@ bool TimeZoneInfo::Load(const std::string& name) {
         if (auto z = FileZoneInfoSource::Open(n)) return z;
 #if defined(_WIN32)
         // Try ICU-based source first on Windows
-        if (auto z = CreateIcuZoneInfoSource(n)) return z;
+        if (auto z = CreateWinIcuZoneInfoSource(n)) return z;
 #endif
         if (auto z = AndroidZoneInfoSource::Open(n)) return z;
         if (auto z = FuchsiaZoneInfoSource::Open(n)) return z;

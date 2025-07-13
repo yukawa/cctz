@@ -14,63 +14,12 @@
 
 #include "time_zone_icu_win.h"
 
-// USE_WIN32_ICU_TIME_ZONE_APIS will be set only when the following conditions
-// are met:
-//  * We're building on Windows
-//  * We can access ICU APIs dynamically
 #if defined(_WIN32)
+
 #if !defined(NOMINMAX)
 #define NOMINMAX
 #endif  // !defined(NOMINMAX)
 #include <windows.h>
-#define USE_WIN32_ICU_TIME_ZONE_APIS
-// Forward declare ICU types since we load them dynamically
-typedef void UCalendar;
-typedef int16_t UChar;
-typedef double UDate;
-typedef int32_t UErrorCode;
-typedef uint8_t UBool;
-typedef int32_t UCalendarDateFields;
-typedef int32_t UCalendarDisplayNameType;
-typedef int32_t UTimeZoneTransitionType;
-typedef int32_t UCalendarType;
-
-// ICU function signatures
-typedef void (*ucal_close_func)(UCalendar* cal);
-typedef int32_t (*ucal_get_func)(const UCalendar* cal, UCalendarDateFields field, UErrorCode* status);
-typedef int32_t (*ucal_getCanonicalTimeZoneID_func)(const UChar* id, int32_t len, UChar* result, int32_t resultCapacity, UBool* isSystemID, UErrorCode* status);
-typedef int32_t (*ucal_getTimeZoneDisplayName_func)(const UCalendar* cal, UCalendarDisplayNameType type, const char* locale, UChar* result, int32_t resultLength, UErrorCode* status);
-typedef UBool (*ucal_getTimeZoneTransitionDate_func)(const UCalendar* cal, UTimeZoneTransitionType type, UDate* transition, UErrorCode* status);
-typedef const char* (*ucal_getTZDataVersion_func)(UErrorCode* status);
-typedef UCalendar* (*ucal_open_func)(const UChar* zoneID, int32_t len, const char* locale, UCalendarType caltype, UErrorCode* status);
-typedef void (*ucal_setMillis_func)(UCalendar* cal, UDate dateTime, UErrorCode* status);
-typedef UDate (*ucal_getMillis_func)(UCalendar* cal, UErrorCode* status);
-typedef int32_t (*ucal_getHostTimeZone_func)(UChar* result, int32_t resultCapacity, UErrorCode* status);
-typedef int32_t (*ucal_getTimeZoneIDForWindowsID_func)(const UChar* winid, int32_t len, const char* region, UChar* id, int32_t idCapacity, UErrorCode* status);
-
-// ICU constants we need
-#define U_ZERO_ERROR 0
-#define U_SUCCESS(x) ((x) <= U_ZERO_ERROR)
-#define U_FAILURE(x) ((x) > U_ZERO_ERROR)
-#define U_BUFFER_OVERFLOW_ERROR 15
-#define U_UNSUPPORTED_ERROR 16
-
-// Calendar fields
-#define UCAL_ZONE_OFFSET 15
-#define UCAL_DST_OFFSET 16
-
-// Calendar types
-#define UCAL_GREGORIAN 1
-
-// Display name types
-#define UCAL_SHORT_STANDARD 1
-#define UCAL_SHORT_DST 3
-
-// Transition types
-#define UCAL_TZ_TRANSITION_NEXT 0
-#endif  // defined(_WIN32)
-
-#if defined(USE_WIN32_ICU_TIME_ZONE_APIS)
 
 #include <algorithm>
 #include <atomic>
@@ -96,35 +45,56 @@ const std::int32_t kSecsPerDay = 24 * 60 * 60;
 // 400-year chunks always have 146097 days (20871 weeks).
 const std::int64_t kSecsPer400Years = 146097LL * kSecsPerDay;
 
-// A ZoneInfoSource implementation that generates TZDATA binary format
-// on-the-fly using Windows ICU APIs. This allows CCTZ to work on Windows 10+
-// without requiring bundled IANA timezone data files.
-class IcuZoneInfoSource : public ZoneInfoSource {
- public:
-  // ZoneInfoSource interface implementation
-  std::size_t Read(void* ptr, std::size_t size) override;
-  int Skip(std::size_t offset) override;
-  std::string Version() const override;
+using UBool = uint8_t;
+using UCalendar = void;
+using UChar = int16_t;
+using UDate = double;
 
-  // Initialize with timezone name. Returns false on failure.
-  bool Init(const std::string& name);
-
- private:
-  IcuZoneInfoSource() = default;
-  friend std::unique_ptr<ZoneInfoSource> cctz::CreateIcuZoneInfoSource(const std::string& name);
-
-  // Generate TZDATA binary format from ICU data
-  bool GenerateTzData(const std::string& name);
-
-  // The generated TZDATA binary data
-  std::vector<char> data_;
-
-  // Current read position
-  std::size_t pos_ = 0;
-
-  // Version string (e.g., "2023a")
-  std::string version_;
+enum UErrorCode : int32_t {
+  U_ZERO_ERROR = 0,
+  U_BUFFER_OVERFLOW_ERROR = 15,
+  U_UNSUPPORTED_ERROR = 16
 };
+
+enum UCalendarDateFields : int32_t {
+  UCAL_ZONE_OFFSET = 15,
+  UCAL_DST_OFFSET = 16
+};
+
+enum UCalendarType : int32_t {
+  UCAL_GREGORIAN = 0,
+};
+
+enum UCalendarDisplayNameType : int32_t {
+  UCAL_SHORT_STANDARD = 1,
+  UCAL_SHORT_DST = 3
+};
+
+enum UTimeZoneTransitionType : int32_t {
+  UCAL_TZ_TRANSITION_NEXT = 0,
+};
+
+// ICU function signatures
+using ucal_close_func = void (__cdecl *)(UCalendar* cal);
+using ucal_get_func = int32_t (__cdecl *)(const UCalendar* cal, UCalendarDateFields field, UErrorCode* status);
+using ucal_getCanonicalTimeZoneID_func = int32_t (__cdecl *)(const UChar* id, int32_t len, UChar* result, int32_t resultCapacity, UBool* isSystemID, UErrorCode* status);
+using ucal_getTimeZoneDisplayName_func = int32_t (__cdecl *)(const UCalendar* cal, UCalendarDisplayNameType type, const char* locale, UChar* result, int32_t resultLength, UErrorCode* status);
+using ucal_getTimeZoneTransitionDate_func = UBool (__cdecl *)(const UCalendar* cal, UTimeZoneTransitionType type, UDate* transition, UErrorCode* status);
+using ucal_getTZDataVersion_func = const char* (__cdecl *)(UErrorCode* status);
+using ucal_open_func = UCalendar* (__cdecl *)(const UChar* zoneID, int32_t len, const char* locale, UCalendarType caltype, UErrorCode* status);
+using ucal_setMillis_func = void (__cdecl *)(UCalendar* cal, UDate dateTime, UErrorCode* status);
+using ucal_getMillis_func = UDate (__cdecl *)(const UCalendar* cal, UErrorCode* status);
+using ucal_getHostTimeZone_func = int32_t (__cdecl *)(UChar* result, int32_t resultCapacity, UErrorCode* status);
+using ucal_getTimeZoneIDForWindowsID_func = int32_t (__cdecl *)(const UChar* winid, int32_t len, const char* region, UChar* id, int32_t idCapacity, UErrorCode* status);
+using ScopedUCalendar = std::unique_ptr<UCalendar, ucal_close_func>;
+
+constexpr bool U_SUCCESS(UErrorCode error) {
+  return error <= U_ZERO_ERROR;
+}
+
+constexpr bool U_FAILURE(UErrorCode error) {
+  return error > U_ZERO_ERROR;
+}
 
 // ICU function pointers - loaded dynamically
 static std::atomic<ucal_close_func> g_ucal_close;
@@ -139,8 +109,6 @@ static std::atomic<ucal_getMillis_func> g_ucal_getMillis;
 static std::atomic<ucal_getHostTimeZone_func> g_ucal_getHostTimeZone;
 static std::atomic<ucal_getTimeZoneIDForWindowsID_func> g_ucal_getTimeZoneIDForWindowsID;
 static std::atomic<bool> g_unavailable;
-
-using ScopedUCalendar = std::unique_ptr<UCalendar, ucal_close_func>;
 
 struct IcuFunctions {
   bool available;
@@ -448,7 +416,9 @@ bool CollectTransitions(const IcuFunctions& icu, const std::string& name,
   initial.abbr = GetTimeZoneAbbr(icu, cal.get(), is_dst);
   transitions.push_back(initial);
 
-  const UDate date_400y_later = 1000.0 * kSecsPer400Years + std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+  const UDate date_400y_later = 1000.0 * kSecsPer400Years + now;
 
   // Find all transitions
   while (current < date_400y_later) {
@@ -488,7 +458,36 @@ bool CollectTransitions(const IcuFunctions& icu, const std::string& name,
   return !transitions.empty();
 }
 
-}  // namespace
+// A ZoneInfoSource implementation that generates TZDATA binary format
+// on-the-fly using Windows ICU APIs. This allows CCTZ to work on Windows 10+
+// without requiring bundled IANA timezone data files.
+class IcuZoneInfoSource : public ZoneInfoSource {
+ public:
+  // ZoneInfoSource interface implementation
+  std::size_t Read(void* ptr, std::size_t size) override;
+  int Skip(std::size_t offset) override;
+  std::string Version() const override;
+
+  // Initialize with timezone name. Returns false on failure.
+  bool Init(const std::string& name);
+
+ private:
+  IcuZoneInfoSource() = default;
+  friend std::unique_ptr<ZoneInfoSource> cctz::CreateWinIcuZoneInfoSource(
+      const std::string& name);
+
+  // Generate TZDATA binary format from ICU data
+  bool GenerateTzData(const std::string& name);
+
+  // The generated TZDATA binary data
+  std::vector<char> data_;
+
+  // Current read position
+  std::size_t pos_ = 0;
+
+  // Version string (e.g., "2023a")
+  std::string version_;
+};
 
 // Implementation of IcuZoneInfoSource methods
 std::size_t IcuZoneInfoSource::Read(void* ptr, std::size_t size) {
@@ -553,7 +552,8 @@ bool IcuZoneInfoSource::GenerateTzData(const std::string& name) {
   std::vector<TransitionType> types;
   std::map<std::pair<int32_t, bool>, uint8_t> type_map;
   std::string abbr_string;
-  std::map<std::string, uint8_t> abbr_map;  // Maps abbreviation to its index in abbr_string
+  // Maps abbreviation to its index in abbr_string
+  std::map<std::string, uint8_t> abbr_map;
 
   for (const auto& trans : transitions) {
     auto key = std::make_pair(trans.offset, trans.is_dst);
@@ -697,8 +697,10 @@ bool IcuZoneInfoSource::GenerateTzData(const std::string& name) {
   return true;
 }
 
+}  // namespace
+
 // Factory function implementation
-std::unique_ptr<ZoneInfoSource> CreateIcuZoneInfoSource(
+std::unique_ptr<ZoneInfoSource> CreateWinIcuZoneInfoSource(
     const std::string& name) {
   auto source = std::unique_ptr<IcuZoneInfoSource>(new IcuZoneInfoSource());
   if (!source->Init(name)) {
@@ -707,7 +709,7 @@ std::unique_ptr<ZoneInfoSource> CreateIcuZoneInfoSource(
   return source;
 }
 
-std::string win32_local_time_zone() {
+std::string GetWinLocalTimeZone() {
   const auto icu_funcs = GetIcuFunctions();
   if (!icu_funcs.available) {
     return "";
@@ -752,20 +754,4 @@ std::string win32_local_time_zone() {
 
 }  // namespace cctz
 
-#else  // !defined(USE_WIN32_ICU_TIME_ZONE_APIS)
-
-namespace cctz {
-
-// Stub implementations when ICU is not available
-std::unique_ptr<ZoneInfoSource> CreateIcuZoneInfoSource(
-    const std::string& /*name*/) {
-  return nullptr;
-}
-
-std::string win32_local_time_zone() {
-  return "";
-}
-
-}  // namespace cctz
-
-#endif  // defined(USE_WIN32_ICU_TIME_ZONE_APIS)
+#endif  // defined(_WIN32)

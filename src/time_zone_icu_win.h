@@ -15,6 +15,8 @@
 #ifndef CCTZ_TIME_ZONE_ICU_WIN_H_
 #define CCTZ_TIME_ZONE_ICU_WIN_H_
 
+#if defined(_WIN32)
+
 #include <memory>
 #include <string>
 
@@ -24,11 +26,13 @@ namespace cctz {
 
 // Factory method to create an IcuZoneInfoSource for the given timezone.
 // Returns nullptr if ICU is not available or the timezone is invalid.
-std::unique_ptr<ZoneInfoSource> CreateIcuZoneInfoSource(const std::string& name);
+std::unique_ptr<ZoneInfoSource> CreateWinIcuZoneInfoSource(
+    const std::string& name);
 
-// Get local timezone name using Windows ICU APIs
-std::string win32_local_time_zone();
+// Get local timezone name using Windows ICU APIs.
+std::string GetWinLocalTimeZone();
 
 }  // namespace cctz
 
+#endif  // defined(_WIN32)
 #endif  // CCTZ_TIME_ZONE_ICU_WIN_H_

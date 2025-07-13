@@ -163,7 +163,7 @@ time_zone local_time_zone() {
   }
 #endif
 #if defined(_WIN32)
-  std::string win32_tz = win32_local_time_zone();
+  std::string win32_tz = GetWinLocalTimeZone();
   if (!win32_tz.empty()) {
     zone = win32_tz.c_str();
   }
