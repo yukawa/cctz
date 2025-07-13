@@ -75,17 +75,30 @@ enum UTimeZoneTransitionType : int32_t {
 
 // ICU function signatures
 using ucal_close_func = void (__cdecl *)(UCalendar* cal);
-using ucal_get_func = int32_t (__cdecl *)(const UCalendar* cal, UCalendarDateFields field, UErrorCode* status);
-using ucal_getCanonicalTimeZoneID_func = int32_t (__cdecl *)(const UChar* id, int32_t len, UChar* result, int32_t resultCapacity, UBool* isSystemID, UErrorCode* status);
-using ucal_getTimeZoneDisplayName_func = int32_t (__cdecl *)(const UCalendar* cal, UCalendarDisplayNameType type, const char* locale, UChar* result, int32_t resultLength, UErrorCode* status);
-using ucal_getTimeZoneTransitionDate_func = UBool (__cdecl *)(const UCalendar* cal, UTimeZoneTransitionType type, UDate* transition, UErrorCode* status);
+using ucal_get_func = int32_t (__cdecl *)(
+    const UCalendar* cal, UCalendarDateFields field, UErrorCode* status);
+using ucal_getCanonicalTimeZoneID_func = int32_t (__cdecl *)(
+    const UChar* id, int32_t len, UChar* result, int32_t resultCapacity,
+    UBool* isSystemID, UErrorCode* status);
+using ucal_getTimeZoneDisplayName_func = int32_t (__cdecl *)(
+    const UCalendar* cal, UCalendarDisplayNameType type, const char* locale,
+    UChar* result, int32_t resultLength, UErrorCode* status);
+using ucal_getTimeZoneTransitionDate_func = UBool (__cdecl *)(
+    const UCalendar* cal, UTimeZoneTransitionType type, UDate* transition,
+    UErrorCode* status);
 using ucal_getTZDataVersion_func = const char* (__cdecl *)(UErrorCode* status);
-using ucal_open_func = UCalendar* (__cdecl *)(const UChar* zoneID, int32_t len, const char* locale, UCalendarType caltype, UErrorCode* status);
-using ucal_setMillis_func = void (__cdecl *)(UCalendar* cal, UDate dateTime, UErrorCode* status);
-using ucal_getMillis_func = UDate (__cdecl *)(const UCalendar* cal, UErrorCode* status);
-using ucal_getHostTimeZone_func = int32_t (__cdecl *)(UChar* result, int32_t resultCapacity, UErrorCode* status);
-using ucal_getTimeZoneIDForWindowsID_func = int32_t (__cdecl *)(const UChar* winid, int32_t len, const char* region, UChar* id, int32_t idCapacity, UErrorCode* status);
-using ScopedUCalendar = std::unique_ptr<UCalendar, ucal_close_func>;
+using ucal_open_func = UCalendar* (__cdecl *)(
+    const UChar* zoneID, int32_t len, const char* locale, UCalendarType caltype,
+    UErrorCode* status);
+using ucal_setMillis_func = void (__cdecl *)(
+    UCalendar* cal, UDate dateTime, UErrorCode* status);
+using ucal_getMillis_func = UDate (__cdecl *)(
+    const UCalendar* cal, UErrorCode* status);
+using ucal_getHostTimeZone_func = int32_t (__cdecl *)(
+    UChar* result, int32_t resultCapacity, UErrorCode* status);
+using ucal_getTimeZoneIDForWindowsID_func = int32_t (__cdecl *)(
+    const UChar* winid, int32_t len, const char* region, UChar* id,
+    int32_t idCapacity, UErrorCode* status);
 
 constexpr bool U_SUCCESS(UErrorCode error) {
   return error <= U_ZERO_ERROR;
@@ -98,35 +111,166 @@ constexpr bool U_FAILURE(UErrorCode error) {
 // ICU function pointers - loaded dynamically
 static std::atomic<ucal_close_func> g_ucal_close;
 static std::atomic<ucal_get_func> g_ucal_get;
-static std::atomic<ucal_getCanonicalTimeZoneID_func> g_ucal_getCanonicalTimeZoneID;
-static std::atomic<ucal_getTimeZoneDisplayName_func> g_ucal_getTimeZoneDisplayName;
-static std::atomic<ucal_getTimeZoneTransitionDate_func> g_ucal_getTimeZoneTransitionDate;
-static std::atomic<ucal_getTZDataVersion_func> g_ucal_getTZDataVersion;
+static std::atomic<ucal_getCanonicalTimeZoneID_func>
+g_ucal_getCanonicalTimeZoneID;
+static std::atomic<ucal_getTimeZoneDisplayName_func>
+g_ucal_getTimeZoneDisplayName;
+static std::atomic<ucal_getTimeZoneTransitionDate_func>
+g_ucal_getTimeZoneTransitionDate;
+static std::atomic<ucal_getTZDataVersion_func>
+g_ucal_getTZDataVersion;
 static std::atomic<ucal_open_func> g_ucal_open;
 static std::atomic<ucal_setMillis_func> g_ucal_setMillis;
 static std::atomic<ucal_getMillis_func> g_ucal_getMillis;
 static std::atomic<ucal_getHostTimeZone_func> g_ucal_getHostTimeZone;
-static std::atomic<ucal_getTimeZoneIDForWindowsID_func> g_ucal_getTimeZoneIDForWindowsID;
+static std::atomic<ucal_getTimeZoneIDForWindowsID_func>
+g_ucal_getTimeZoneIDForWindowsID;
 static std::atomic<bool> g_unavailable;
 
 struct IcuFunctions {
-  bool available;
-  ucal_close_func ucal_close;
-  ucal_get_func ucal_get;
-  ucal_getCanonicalTimeZoneID_func ucal_getCanonicalTimeZoneID;
-  ucal_getTimeZoneDisplayName_func ucal_getTimeZoneDisplayName;
-  ucal_getTimeZoneTransitionDate_func ucal_getTimeZoneTransitionDate;
-  ucal_getTZDataVersion_func ucal_getTZDataVersion;
-  ucal_open_func ucal_open;
-  ucal_setMillis_func ucal_setMillis;
-  ucal_getMillis_func ucal_getMillis;
-  ucal_getHostTimeZone_func ucal_getHostTimeZone;
-  ucal_getTimeZoneIDForWindowsID_func ucal_getTimeZoneIDForWindowsID;
+  const bool available;
+  const ucal_close_func ucal_close;
+  const ucal_get_func ucal_get;
+  const ucal_getCanonicalTimeZoneID_func ucal_getCanonicalTimeZoneID;
+  const ucal_getTimeZoneDisplayName_func ucal_getTimeZoneDisplayName;
+  const ucal_getTimeZoneTransitionDate_func ucal_getTimeZoneTransitionDate;
+  const ucal_getTZDataVersion_func ucal_getTZDataVersion;
+  const ucal_open_func ucal_open;
+  const ucal_setMillis_func ucal_setMillis;
+  const ucal_getMillis_func ucal_getMillis;
+  const ucal_getHostTimeZone_func ucal_getHostTimeZone;
+  const ucal_getTimeZoneIDForWindowsID_func ucal_getTimeZoneIDForWindowsID;
 
   static IcuFunctions Unavailable() {
-    return {false, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    return {false, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+            nullptr, nullptr, nullptr, nullptr, nullptr};
   }
 };
+
+// Load ICU functions dynamically
+IcuFunctions GetIcuFunctions() {
+  if (g_unavailable.load(std::memory_order_relaxed)) {
+    return IcuFunctions::Unavailable();
+  }
+
+  // Check if already loaded
+  {
+    const auto ucal_closeRef = g_ucal_close.load(std::memory_order_relaxed);
+    const auto ucal_getRef = g_ucal_get.load(std::memory_order_relaxed);
+    const auto ucal_getCanonicalTimeZoneIDRef =
+        g_ucal_getCanonicalTimeZoneID.load(std::memory_order_relaxed);
+    const auto ucal_getTimeZoneDisplayNameRef =
+        g_ucal_getTimeZoneDisplayName.load(std::memory_order_relaxed);
+    const auto ucal_getTimeZoneTransitionDateRef =
+        g_ucal_getTimeZoneTransitionDate.load(std::memory_order_relaxed);
+    const auto ucal_getTZDataVersionRef =
+        g_ucal_getTZDataVersion.load(std::memory_order_relaxed);
+    const auto ucal_openRef = g_ucal_open.load(std::memory_order_relaxed);
+    const auto ucal_setMillisRef =
+        g_ucal_setMillis.load(std::memory_order_relaxed);
+    const auto ucal_getMillisRef =
+        g_ucal_getMillis.load(std::memory_order_relaxed);
+    const auto ucal_getHostTimeZoneRef =
+        g_ucal_getHostTimeZone.load(std::memory_order_relaxed);
+    const auto ucal_getTimeZoneIDForWindowsIDRef =
+        g_ucal_getTimeZoneIDForWindowsID.load(std::memory_order_relaxed);
+
+    if (ucal_closeRef != nullptr && ucal_getRef != nullptr &&
+        ucal_getCanonicalTimeZoneIDRef != nullptr &&
+        ucal_getTimeZoneDisplayNameRef != nullptr &&
+        ucal_getTimeZoneTransitionDateRef != nullptr &&
+        ucal_getTZDataVersionRef != nullptr && ucal_openRef != nullptr &&
+        ucal_setMillisRef != nullptr &&
+        ucal_getMillisRef != nullptr &&
+        ucal_getHostTimeZoneRef != nullptr &&
+        ucal_getTimeZoneIDForWindowsIDRef != nullptr) {
+      return {true, ucal_closeRef, ucal_getRef, ucal_getCanonicalTimeZoneIDRef,
+              ucal_getTimeZoneDisplayNameRef, ucal_getTimeZoneTransitionDateRef,
+              ucal_getTZDataVersionRef, ucal_openRef,
+              ucal_setMillisRef, ucal_getMillisRef, ucal_getHostTimeZoneRef,
+              ucal_getTimeZoneIDForWindowsIDRef};
+    }
+  }
+
+  const HMODULE icudll =
+      ::LoadLibraryExW(L"icu.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+  if (icudll == nullptr) {
+    g_unavailable.store(true, std::memory_order_relaxed);
+    return IcuFunctions::Unavailable();
+  }
+
+  const auto ucal_closeRef = reinterpret_cast<ucal_close_func>(
+      ::GetProcAddress(icudll, "ucal_close"));
+  const auto ucal_getRef = reinterpret_cast<ucal_get_func>(
+      ::GetProcAddress(icudll, "ucal_get"));
+  const auto ucal_getCanonicalTimeZoneIDRef =
+      reinterpret_cast<ucal_getCanonicalTimeZoneID_func>(
+          ::GetProcAddress(icudll, "ucal_getCanonicalTimeZoneID"));
+  const auto ucal_getTimeZoneDisplayNameRef =
+      reinterpret_cast<ucal_getTimeZoneDisplayName_func>(
+          ::GetProcAddress(icudll, "ucal_getTimeZoneDisplayName"));
+  const auto ucal_getTimeZoneTransitionDateRef =
+      reinterpret_cast<ucal_getTimeZoneTransitionDate_func>(
+          ::GetProcAddress(icudll, "ucal_getTimeZoneTransitionDate"));
+  const auto ucal_getTZDataVersionRef =
+      reinterpret_cast<ucal_getTZDataVersion_func>(
+          ::GetProcAddress(icudll, "ucal_getTZDataVersion"));
+  const auto ucal_openRef = reinterpret_cast<ucal_open_func>(
+      ::GetProcAddress(icudll, "ucal_open"));
+  const auto ucal_setMillisRef = reinterpret_cast<ucal_setMillis_func>(
+      ::GetProcAddress(icudll, "ucal_setMillis"));
+  const auto ucal_getMillisRef = reinterpret_cast<ucal_getMillis_func>(
+      ::GetProcAddress(icudll, "ucal_getMillis"));
+  auto ucal_getHostTimeZoneRef = reinterpret_cast<ucal_getHostTimeZone_func>(
+      ::GetProcAddress(icudll, "ucal_getHostTimeZone"));
+  const auto ucal_getTimeZoneIDForWindowsIDRef =
+      reinterpret_cast<ucal_getTimeZoneIDForWindowsID_func>(
+          ::GetProcAddress(icudll, "ucal_getTimeZoneIDForWindowsID"));
+
+  // Note: ucal_getHostTimeZone might not be available on older Windows versions
+  static auto ucal_getHostTimeZone_stub = [](
+      UChar* result, int32_t resultCapacity, UErrorCode* ec) -> int32_t {
+    if (ec) *ec = U_UNSUPPORTED_ERROR;
+    return 0;
+  };
+  if (!ucal_getHostTimeZoneRef) {
+    ucal_getHostTimeZoneRef = ucal_getHostTimeZone_stub;
+  }
+
+  if (!ucal_closeRef || !ucal_getRef || !ucal_getCanonicalTimeZoneIDRef ||
+      !ucal_getTimeZoneDisplayNameRef || !ucal_getTimeZoneTransitionDateRef ||
+      !ucal_getTZDataVersionRef || !ucal_openRef ||
+      !ucal_setMillisRef || !ucal_getMillisRef ||
+      !ucal_getTimeZoneIDForWindowsIDRef) {
+    g_unavailable.store(true);
+    return IcuFunctions::Unavailable();
+  }
+
+  // Store the function pointers
+  g_ucal_close.store(ucal_closeRef, std::memory_order_relaxed);
+  g_ucal_get.store(ucal_getRef, std::memory_order_relaxed);
+  g_ucal_getCanonicalTimeZoneID.store(ucal_getCanonicalTimeZoneIDRef,
+                                      std::memory_order_relaxed);
+  g_ucal_getTimeZoneDisplayName.store(ucal_getTimeZoneDisplayNameRef,
+                                      std::memory_order_relaxed);
+  g_ucal_getTimeZoneTransitionDate.store(ucal_getTimeZoneTransitionDateRef,
+                                         std::memory_order_relaxed);
+  g_ucal_getTZDataVersion.store(ucal_getTZDataVersionRef,
+                                std::memory_order_relaxed);
+  g_ucal_open.store(ucal_openRef, std::memory_order_relaxed);
+  g_ucal_setMillis.store(ucal_setMillisRef, std::memory_order_relaxed);
+  g_ucal_getMillis.store(ucal_getMillisRef, std::memory_order_relaxed);
+  g_ucal_getHostTimeZone.store(ucal_getHostTimeZoneRef,
+                               std::memory_order_relaxed);
+  g_ucal_getTimeZoneIDForWindowsID.store(ucal_getTimeZoneIDForWindowsIDRef,
+                                         std::memory_order_relaxed);
+
+  return {true, ucal_closeRef, ucal_getRef, ucal_getCanonicalTimeZoneIDRef,
+          ucal_getTimeZoneDisplayNameRef, ucal_getTimeZoneTransitionDateRef,
+          ucal_getTZDataVersionRef, ucal_openRef,
+          ucal_setMillisRef, ucal_getMillisRef, ucal_getHostTimeZoneRef,
+          ucal_getTimeZoneIDForWindowsIDRef};
+}
 
 // Convert UTF-8 string to UChar array (UTF-16)
 std::pair<std::unique_ptr<UChar[]>, int> ToUChars(const std::string& utf8str) {
@@ -178,111 +322,6 @@ std::string FromUChars(const UChar* ptr, size_t size) {
     return std::string();
   }
   return utf8;
-}
-
-// Load ICU functions dynamically
-IcuFunctions GetIcuFunctions() {
-  if (g_unavailable.load(std::memory_order_relaxed)) {
-    return IcuFunctions::Unavailable();
-  }
-
-  // Check if already loaded
-  {
-    const auto ucal_closeRef = g_ucal_close.load(std::memory_order_relaxed);
-    const auto ucal_getRef = g_ucal_get.load(std::memory_order_relaxed);
-    const auto ucal_getCanonicalTimeZoneIDRef =
-        g_ucal_getCanonicalTimeZoneID.load(std::memory_order_relaxed);
-    const auto ucal_getTimeZoneDisplayNameRef =
-        g_ucal_getTimeZoneDisplayName.load(std::memory_order_relaxed);
-    const auto ucal_getTimeZoneTransitionDateRef =
-        g_ucal_getTimeZoneTransitionDate.load(std::memory_order_relaxed);
-    const auto ucal_getTZDataVersionRef =
-        g_ucal_getTZDataVersion.load(std::memory_order_relaxed);
-    const auto ucal_openRef = g_ucal_open.load(std::memory_order_relaxed);
-    const auto ucal_setMillisRef =
-        g_ucal_setMillis.load(std::memory_order_relaxed);
-    const auto ucal_getMillisRef =
-        g_ucal_getMillis.load(std::memory_order_relaxed);
-    const auto ucal_getHostTimeZoneRef =
-        g_ucal_getHostTimeZone.load(std::memory_order_relaxed);
-    const auto ucal_getTimeZoneIDForWindowsIDRef =
-        g_ucal_getTimeZoneIDForWindowsID.load(std::memory_order_relaxed);
-
-    if (ucal_closeRef != nullptr && ucal_getRef != nullptr &&
-        ucal_getCanonicalTimeZoneIDRef != nullptr &&
-        ucal_getTimeZoneDisplayNameRef != nullptr &&
-        ucal_getTimeZoneTransitionDateRef != nullptr &&
-        ucal_getTZDataVersionRef != nullptr && ucal_openRef != nullptr &&
-        ucal_setMillisRef != nullptr &&
-        ucal_getMillisRef != nullptr &&
-        ucal_getHostTimeZoneRef != nullptr && ucal_getTimeZoneIDForWindowsIDRef != nullptr) {
-      return {true, ucal_closeRef, ucal_getRef, ucal_getCanonicalTimeZoneIDRef,
-              ucal_getTimeZoneDisplayNameRef, ucal_getTimeZoneTransitionDateRef,
-              ucal_getTZDataVersionRef, ucal_openRef,
-              ucal_setMillisRef, ucal_getMillisRef, ucal_getHostTimeZoneRef,
-              ucal_getTimeZoneIDForWindowsIDRef};
-    }
-  }
-
-  const HMODULE icudll =
-      ::LoadLibraryExW(L"icu.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-  if (icudll == nullptr) {
-    g_unavailable.store(true, std::memory_order_relaxed);
-    return IcuFunctions::Unavailable();
-  }
-
-  const auto ucal_closeRef = reinterpret_cast<ucal_close_func>(::GetProcAddress(icudll, "ucal_close"));
-  const auto ucal_getRef = reinterpret_cast<ucal_get_func>(::GetProcAddress(icudll, "ucal_get"));
-  const auto ucal_getCanonicalTimeZoneIDRef = reinterpret_cast<ucal_getCanonicalTimeZoneID_func>(::GetProcAddress(icudll, "ucal_getCanonicalTimeZoneID"));
-  const auto ucal_getTimeZoneDisplayNameRef = reinterpret_cast<ucal_getTimeZoneDisplayName_func>(::GetProcAddress(icudll, "ucal_getTimeZoneDisplayName"));
-  const auto ucal_getTimeZoneTransitionDateRef = reinterpret_cast<ucal_getTimeZoneTransitionDate_func>(::GetProcAddress(icudll, "ucal_getTimeZoneTransitionDate"));
-  const auto ucal_getTZDataVersionRef = reinterpret_cast<ucal_getTZDataVersion_func>(::GetProcAddress(icudll, "ucal_getTZDataVersion"));
-  const auto ucal_openRef = reinterpret_cast<ucal_open_func>(::GetProcAddress(icudll, "ucal_open"));
-  const auto ucal_setMillisRef = reinterpret_cast<ucal_setMillis_func>(::GetProcAddress(icudll, "ucal_setMillis"));
-  const auto ucal_getMillisRef = reinterpret_cast<ucal_getMillis_func>(::GetProcAddress(icudll, "ucal_getMillis"));
-  auto ucal_getHostTimeZoneRef = reinterpret_cast<ucal_getHostTimeZone_func>(::GetProcAddress(icudll, "ucal_getHostTimeZone"));
-  const auto ucal_getTimeZoneIDForWindowsIDRef = reinterpret_cast<ucal_getTimeZoneIDForWindowsID_func>(::GetProcAddress(icudll, "ucal_getTimeZoneIDForWindowsID"));
-
-  // Note: ucal_getHostTimeZone might not be available on older Windows versions
-  static auto ucal_getHostTimeZone_stub = [](UChar* result, int32_t resultCapacity, UErrorCode* ec) -> int32_t {
-    if (ec) *ec = U_UNSUPPORTED_ERROR;
-    return 0;
-  };
-  if (!ucal_getHostTimeZoneRef) {
-    ucal_getHostTimeZoneRef = +ucal_getHostTimeZone_stub;
-  }
-
-  if (!ucal_closeRef || !ucal_getRef || !ucal_getCanonicalTimeZoneIDRef ||
-      !ucal_getTimeZoneDisplayNameRef || !ucal_getTimeZoneTransitionDateRef ||
-      !ucal_getTZDataVersionRef || !ucal_openRef ||
-      !ucal_setMillisRef || !ucal_getMillisRef ||
-      !ucal_getTimeZoneIDForWindowsIDRef) {
-    g_unavailable.store(true);
-    return IcuFunctions::Unavailable();
-  }
-
-  // Store the function pointers
-  g_ucal_close.store(ucal_closeRef, std::memory_order_relaxed);
-  g_ucal_get.store(ucal_getRef, std::memory_order_relaxed);
-  g_ucal_getCanonicalTimeZoneID.store(ucal_getCanonicalTimeZoneIDRef,
-                                      std::memory_order_relaxed);
-  g_ucal_getTimeZoneDisplayName.store(ucal_getTimeZoneDisplayNameRef,
-                                      std::memory_order_relaxed);
-  g_ucal_getTimeZoneTransitionDate.store(ucal_getTimeZoneTransitionDateRef,
-                                         std::memory_order_relaxed);
-  g_ucal_getTZDataVersion.store(ucal_getTZDataVersionRef,
-                                std::memory_order_relaxed);
-  g_ucal_open.store(ucal_openRef, std::memory_order_relaxed);
-  g_ucal_setMillis.store(ucal_setMillisRef, std::memory_order_relaxed);
-  g_ucal_getMillis.store(ucal_getMillisRef, std::memory_order_relaxed);
-  g_ucal_getHostTimeZone.store(ucal_getHostTimeZoneRef, std::memory_order_relaxed);
-  g_ucal_getTimeZoneIDForWindowsID.store(ucal_getTimeZoneIDForWindowsIDRef, std::memory_order_relaxed);
-
-  return {true, ucal_closeRef, ucal_getRef, ucal_getCanonicalTimeZoneIDRef,
-          ucal_getTimeZoneDisplayNameRef, ucal_getTimeZoneTransitionDateRef,
-          ucal_getTZDataVersionRef, ucal_openRef,
-          ucal_setMillisRef, ucal_getMillisRef, ucal_getHostTimeZoneRef,
-          ucal_getTimeZoneIDForWindowsIDRef};
 }
 
 // Helper to encode big-endian integers
@@ -353,7 +392,7 @@ bool CollectTransitions(const IcuFunctions& icu, const std::string& name,
   UErrorCode status = U_ZERO_ERROR;
   UBool is_system_id = false;
   int buffer_size = 256;
-  std::unique_ptr<UChar[]> canonical_buffer = std::make_unique<UChar[]>(buffer_size);
+  auto canonical_buffer = std::make_unique<UChar[]>(buffer_size);
 
   int32_t canonical_length = icu.ucal_getCanonicalTimeZoneID(
       zone_id.first.get(), zone_id.second, canonical_buffer.get(), buffer_size, 
@@ -372,6 +411,7 @@ bool CollectTransitions(const IcuFunctions& icu, const std::string& name,
     return false;  // Invalid timezone name
   }
 
+  using ScopedUCalendar = std::unique_ptr<UCalendar, ucal_close_func>;
   status = U_ZERO_ERROR;
   ScopedUCalendar cal(icu.ucal_open(zone_id.first.get(), zone_id.second,
                                     nullptr, UCAL_GREGORIAN, &status),
