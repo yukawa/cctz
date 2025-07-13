@@ -307,8 +307,7 @@ std::pair<std::unique_ptr<UChar[]>, int> ToUChars(const std::string& utf8str) {
     return std::make_pair(nullptr, 0);
   }
   const int num_counts_with_null = num_counts + 1;
-  std::unique_ptr<UChar[]> ustr =
-      std::make_unique<UChar[]>(num_counts_with_null);
+  auto ustr = std::make_unique<UChar[]>(num_counts_with_null);
   const int written_counts = ::MultiByteToWideChar(
       CP_UTF8, MB_ERR_INVALID_CHARS, utf8str.data(), utf8str_len,
       reinterpret_cast<wchar_t*>(ustr.get()), num_counts_with_null);
@@ -385,7 +384,7 @@ std::string GetTimeZoneAbbr(const IcuFunctions& icu, UCalendar* cal,
       is_dst ? UCAL_SHORT_DST : UCAL_SHORT_STANDARD;
 
   int buffer_size = 16;
-  std::unique_ptr<UChar[]> buffer = std::make_unique<UChar[]>(buffer_size);
+  auto buffer = std::make_unique<UChar[]>(buffer_size);
 
   int length = icu.ucal_getTimeZoneDisplayName(
       cal, type, nullptr, buffer.get(), buffer_size, &status);
