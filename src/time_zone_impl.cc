@@ -23,6 +23,8 @@
 
 #include "time_zone_fixed.h"
 
+#include <windows.h>
+
 namespace cctz {
 
 namespace {

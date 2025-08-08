@@ -839,6 +839,10 @@ TEST(TimeZoneEdgeCase, AmericaJamaica) {
 TEST(TimeZoneEdgeCase, EuropeLisbon) {
   // Cover a non-existent time within a forward transition.
   const time_zone tz = LoadZone("Europe/Lisbon");
+  if (tz.version() < "2024b") {
+    GTEST_SKIP() << "tzver=" << tz.version()
+        << ". Skipping test for Europe/Lisbon before 2024b.";
+  }
 
   // Over a forward transition.
   //     354671999 == Sat, 28 Mar 1981 23:59:59 +0000 (WET)
