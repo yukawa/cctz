@@ -45,6 +45,8 @@ cc_library(
         "src/time_zone_fixed.cc",
         "src/time_zone_fixed.h",
         "src/time_zone_format.cc",
+        "src/time_zone_icu_win.cc",
+        "src/time_zone_icu_win.h",
         "src/time_zone_if.cc",
         "src/time_zone_if.h",
         "src/time_zone_impl.cc",

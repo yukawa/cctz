@@ -110,6 +110,9 @@ TEST(TimeZones, LoadZonesConcurrently) {
   // source when running on Android, where it is difficult to override
   // the bionic tzdata provided by the test environment.
   const std::size_t max_failures = 20;
+#elif defined(_WIN32) && defined(CCTZ_USE_WIN_ICU)
+  // "icu.dll" shipped with Windows may embed older zoneinfo data source.
+  const std::size_t max_failures = 4;
 #else
   const std::size_t max_failures = 3;
 #endif
@@ -839,6 +842,10 @@ TEST(TimeZoneEdgeCase, AmericaJamaica) {
 TEST(TimeZoneEdgeCase, EuropeLisbon) {
   // Cover a non-existent time within a forward transition.
   const time_zone tz = LoadZone("Europe/Lisbon");
+  if (tz.version() < "2024b") {
+    GTEST_SKIP() << "tzver=" << tz.version()
+        << ". Skipping test for Europe/Lisbon before 2024b.";
+  }
 
   // Over a forward transition.
   //     354671999 == Sat, 28 Mar 1981 23:59:59 +0000 (WET)
