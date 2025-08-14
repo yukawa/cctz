@@ -68,14 +68,38 @@ enum UCalendarType : int32_t {
 };
 
 enum UCalendarDisplayNameType : int32_t {
+  UCAL_STANDARD = 0,
   UCAL_SHORT_STANDARD = 1,
+  UCAL_DST = 2,
   UCAL_SHORT_DST = 3,
 };
 
 enum UTimeZoneTransitionType : int32_t {
   UCAL_TZ_TRANSITION_NEXT = 0,
   UCAL_TZ_TRANSITION_NEXT_INCLUSIVE = 1,
+  UCAL_TZ_TRANSITION_PREVIOUS = 2,
   UCAL_TZ_TRANSITION_PREVIOUS_INCLUSIVE = 3,
+};
+
+enum UCalendarAttribute : int32_t {
+  UCAL_LENIENT = 0,
+  UCAL_REPEATED_WALL_TIME = 3,
+  UCAL_SKIPPED_WALL_TIME = 4,
+};
+
+enum UCalendarWallTimeOption : int32_t {
+  UCAL_WALLTIME_LAST = 0,
+  UCAL_WALLTIME_FIRST = 1,
+  UCAL_WALLTIME_NEXT_VALID = 2,
+};
+
+enum UCalendarLimitType : int32_t {
+  UCAL_MINIMUM = 0,
+  UCAL_MAXIMUM = 1,
+  UCAL_GREATEST_MINIMUM = 2,
+  UCAL_LEAST_MAXIMUM = 3,
+  UCAL_ACTUAL_MINIMUM = 4,
+  UCAL_ACTUAL_MAXIMUM = 5,
 };
 
 constexpr bool U_SUCCESS(UErrorCode error) { return error <= U_ZERO_ERROR; }
@@ -109,12 +133,26 @@ struct IcuFunctions final {
   using ucal_get_func = int32_t(__cdecl*)(const UCalendar* cal,
                                           UCalendarDateFields field,
                                           UErrorCode* status);
+  using ucal_getAttribute_func = int32_t(__cdecl*)(const UCalendar* cal,
+                                                   UCalendarAttribute attr);
   using ucal_getCanonicalTimeZoneID_func = int32_t(__cdecl*)(
       const UChar* id, int32_t len, UChar* result, int32_t resultCapacity,
       UBool* isSystemID, UErrorCode* status);
+  using ucal_getHostTimeZone_func = int32_t(__cdecl*)(UChar* result,
+                                                      int32_t resultCapacity,
+                                                      UErrorCode* status);
+  using ucal_getLimit_func = int32_t(__cdecl*)(const UCalendar* cal,
+                                               UCalendarDateFields field,
+                                               UCalendarLimitType type,
+                                               UErrorCode* status);
+  using ucal_getMillis_func = UDate(__cdecl*)(const UCalendar* cal,
+                                              UErrorCode* status);
   using ucal_getTimeZoneDisplayName_func = int32_t(__cdecl*)(
       const UCalendar* cal, UCalendarDisplayNameType type, const char* locale,
       UChar* result, int32_t resultLength, UErrorCode* status);
+  using ucal_getTimeZoneIDForWindowsID_func =
+      int32_t(__cdecl*)(const UChar* winid, int32_t len, const char* region,
+                        UChar* id, int32_t idCapacity, UErrorCode* status);
   using ucal_getTimeZoneTransitionDate_func =
       UBool(__cdecl*)(const UCalendar* cal, UTimeZoneTransitionType type,
                       UDate* transition, UErrorCode* status);
@@ -126,16 +164,16 @@ struct IcuFunctions final {
   using ucal_set_func = void(__cdecl*)(UCalendar* cal,
                                        UCalendarDateFields field,
                                        int32_t value);
+  using ucal_setAttribute_func = void(__cdecl*)(UCalendar* cal,
+                                                UCalendarAttribute attr,
+                                                int32_t newValue);
+  using ucal_setDateTime_func = void(__cdecl*)(UCalendar* cal, int32_t year,
+                                               int32_t month, int32_t date,
+                                               int32_t hour, int32_t minute,
+                                               int32_t second,
+                                               UErrorCode* status);
   using ucal_setMillis_func = void(__cdecl*)(UCalendar* cal, UDate dateTime,
                                              UErrorCode* status);
-  using ucal_getMillis_func = UDate(__cdecl*)(const UCalendar* cal,
-                                              UErrorCode* status);
-  using ucal_getHostTimeZone_func = int32_t(__cdecl*)(UChar* result,
-                                                      int32_t resultCapacity,
-                                                      UErrorCode* status);
-  using ucal_getTimeZoneIDForWindowsID_func =
-      int32_t(__cdecl*)(const UChar* winid, int32_t len, const char* region,
-                        UChar* id, int32_t idCapacity, UErrorCode* status);
 
   using ScopedUCalendar = std::unique_ptr<UCalendar, ucal_close_func>;
 
@@ -144,20 +182,24 @@ struct IcuFunctions final {
   const ucal_clone_func ucal_clone;
   const ucal_close_func ucal_close;
   const ucal_get_func ucal_get;
+  const ucal_getAttribute_func ucal_getAttribute;
   const ucal_getCanonicalTimeZoneID_func ucal_getCanonicalTimeZoneID;
+  const ucal_getHostTimeZone_func ucal_getHostTimeZone;
+  const ucal_getLimit_func ucal_getLimit;
+  const ucal_getMillis_func ucal_getMillis;
   const ucal_getTimeZoneDisplayName_func ucal_getTimeZoneDisplayName;
+  const ucal_getTimeZoneIDForWindowsID_func ucal_getTimeZoneIDForWindowsID;
   const ucal_getTimeZoneTransitionDate_func ucal_getTimeZoneTransitionDate;
   const ucal_getTZDataVersion_func ucal_getTZDataVersion;
   const ucal_open_func ucal_open;
   const ucal_set_func ucal_set;
+  const ucal_setAttribute_func ucal_setAttribute;
+  const ucal_setDateTime_func ucal_setDateTime;
   const ucal_setMillis_func ucal_setMillis;
-  const ucal_getMillis_func ucal_getMillis;
-  const ucal_getHostTimeZone_func ucal_getHostTimeZone;
-  const ucal_getTimeZoneIDForWindowsID_func ucal_getTimeZoneIDForWindowsID;
 
   static IcuFunctions Unavailable() {
-    return {false,   nullptr, nullptr, nullptr, nullptr,
-            nullptr, nullptr, nullptr, nullptr, nullptr,
+    return {false,   nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
             nullptr, nullptr, nullptr, nullptr, nullptr};
   }
 
@@ -171,20 +213,24 @@ struct IcuFunctions final {
     static std::atomic<ucal_clone_func> g_ucal_clone;
     static std::atomic<ucal_close_func> g_ucal_close;
     static std::atomic<ucal_get_func> g_ucal_get;
+    static std::atomic<ucal_getAttribute_func> g_ucal_getAttribute;
     static std::atomic<ucal_getCanonicalTimeZoneID_func>
         g_ucal_getCanonicalTimeZoneID;
+    static std::atomic<ucal_getHostTimeZone_func> g_ucal_getHostTimeZone;
+    static std::atomic<ucal_getLimit_func> g_ucal_getLimit;
+    static std::atomic<ucal_getMillis_func> g_ucal_getMillis;
     static std::atomic<ucal_getTimeZoneDisplayName_func>
         g_ucal_getTimeZoneDisplayName;
+    static std::atomic<ucal_getTimeZoneIDForWindowsID_func>
+        g_ucal_getTimeZoneIDForWindowsID;
     static std::atomic<ucal_getTimeZoneTransitionDate_func>
         g_ucal_getTimeZoneTransitionDate;
     static std::atomic<ucal_getTZDataVersion_func> g_ucal_getTZDataVersion;
     static std::atomic<ucal_open_func> g_ucal_open;
     static std::atomic<ucal_set_func> g_ucal_set;
+    static std::atomic<ucal_setAttribute_func> g_ucal_setAttribute;
+    static std::atomic<ucal_setDateTime_func> g_ucal_setDateTime;
     static std::atomic<ucal_setMillis_func> g_ucal_setMillis;
-    static std::atomic<ucal_getMillis_func> g_ucal_getMillis;
-    static std::atomic<ucal_getHostTimeZone_func> g_ucal_getHostTimeZone;
-    static std::atomic<ucal_getTimeZoneIDForWindowsID_func>
-        g_ucal_getTimeZoneIDForWindowsID;
 
     // Check if already loaded
     {
@@ -192,49 +238,64 @@ struct IcuFunctions final {
       const auto ucal_cloneRef = g_ucal_clone.load(std::memory_order_relaxed);
       const auto ucal_closeRef = g_ucal_close.load(std::memory_order_relaxed);
       const auto ucal_getRef = g_ucal_get.load(std::memory_order_relaxed);
+      const auto ucal_getAttributeRef =
+          g_ucal_getAttribute.load(std::memory_order_relaxed);
       const auto ucal_getCanonicalTimeZoneIDRef =
           g_ucal_getCanonicalTimeZoneID.load(std::memory_order_relaxed);
+      const auto ucal_getHostTimeZoneRef =
+          g_ucal_getHostTimeZone.load(std::memory_order_relaxed);
+      const auto ucal_getLimitRef =
+          g_ucal_getLimit.load(std::memory_order_relaxed);
+      const auto ucal_getMillisRef =
+          g_ucal_getMillis.load(std::memory_order_relaxed);
       const auto ucal_getTimeZoneDisplayNameRef =
           g_ucal_getTimeZoneDisplayName.load(std::memory_order_relaxed);
+      const auto ucal_getTimeZoneIDForWindowsIDRef =
+          g_ucal_getTimeZoneIDForWindowsID.load(std::memory_order_relaxed);
       const auto ucal_getTimeZoneTransitionDateRef =
           g_ucal_getTimeZoneTransitionDate.load(std::memory_order_relaxed);
       const auto ucal_getTZDataVersionRef =
           g_ucal_getTZDataVersion.load(std::memory_order_relaxed);
       const auto ucal_openRef = g_ucal_open.load(std::memory_order_relaxed);
       const auto ucal_setRef = g_ucal_set.load(std::memory_order_relaxed);
+      const auto ucal_setAttributeRef =
+          g_ucal_setAttribute.load(std::memory_order_relaxed);
+      const auto ucal_setDateTimeRef =
+          g_ucal_setDateTime.load(std::memory_order_relaxed);
       const auto ucal_setMillisRef =
           g_ucal_setMillis.load(std::memory_order_relaxed);
-      const auto ucal_getMillisRef =
-          g_ucal_getMillis.load(std::memory_order_relaxed);
-      const auto ucal_getHostTimeZoneRef =
-          g_ucal_getHostTimeZone.load(std::memory_order_relaxed);
-      const auto ucal_getTimeZoneIDForWindowsIDRef =
-          g_ucal_getTimeZoneIDForWindowsID.load(std::memory_order_relaxed);
 
       if (ucal_clearRef != nullptr && ucal_closeRef != nullptr &&
           ucal_cloneRef != nullptr && ucal_getRef != nullptr &&
+          ucal_getAttributeRef != nullptr &&
           ucal_getCanonicalTimeZoneIDRef != nullptr &&
+          ucal_getHostTimeZoneRef != nullptr && ucal_getLimitRef != nullptr &&
+          ucal_getMillisRef != nullptr &&
           ucal_getTimeZoneDisplayNameRef != nullptr &&
+          ucal_getTimeZoneIDForWindowsIDRef != nullptr &&
           ucal_getTimeZoneTransitionDateRef != nullptr &&
           ucal_getTZDataVersionRef != nullptr && ucal_openRef != nullptr &&
-          ucal_setRef != nullptr && ucal_setMillisRef != nullptr &&
-          ucal_getMillisRef != nullptr && ucal_getHostTimeZoneRef != nullptr &&
-          ucal_getTimeZoneIDForWindowsIDRef != nullptr) {
+          ucal_setRef != nullptr && ucal_setAttributeRef != nullptr &&
+          ucal_setDateTimeRef != nullptr && ucal_setMillisRef != nullptr) {
         return {true,
                 ucal_clearRef,
                 ucal_cloneRef,
                 ucal_closeRef,
                 ucal_getRef,
+                ucal_getAttributeRef,
                 ucal_getCanonicalTimeZoneIDRef,
+                ucal_getHostTimeZoneRef,
+                ucal_getLimitRef,
+                ucal_getMillisRef,
                 ucal_getTimeZoneDisplayNameRef,
+                ucal_getTimeZoneIDForWindowsIDRef,
                 ucal_getTimeZoneTransitionDateRef,
                 ucal_getTZDataVersionRef,
                 ucal_openRef,
                 ucal_setRef,
-                ucal_setMillisRef,
-                ucal_getMillisRef,
-                ucal_getHostTimeZoneRef,
-                ucal_getTimeZoneIDForWindowsIDRef};
+                ucal_setAttributeRef,
+                ucal_setDateTimeRef,
+                ucal_setMillisRef};
       }
     }
 
@@ -271,30 +332,38 @@ struct IcuFunctions final {
     const auto ucal_closeRef =
         AsProcAddress<ucal_close_func>(icu_dll, "ucal_close");
     const auto ucal_getRef = AsProcAddress<ucal_get_func>(icu_dll, "ucal_get");
+    const auto ucal_getAttributeRef =
+        AsProcAddress<ucal_getAttribute_func>(icu_dll, "ucal_getAttribute");
     const auto ucal_getCanonicalTimeZoneIDRef =
         AsProcAddress<ucal_getCanonicalTimeZoneID_func>(
             icu_dll, "ucal_getCanonicalTimeZoneID");
+    const auto ucal_getLimitRef =
+        AsProcAddress<ucal_getLimit_func>(icu_dll, "ucal_getLimit");
+    auto ucal_getHostTimeZoneRef = AsProcAddress<ucal_getHostTimeZone_func>(
+        icu_dll, "ucal_getHostTimeZone");
+    const auto ucal_getMillisRef =
+        AsProcAddress<ucal_getMillis_func>(icu_dll, "ucal_getMillis");
     const auto ucal_getTimeZoneDisplayNameRef =
         AsProcAddress<ucal_getTimeZoneDisplayName_func>(
             icu_dll, "ucal_getTimeZoneDisplayName");
     const auto ucal_getTimeZoneTransitionDateRef =
         AsProcAddress<ucal_getTimeZoneTransitionDate_func>(
             icu_dll, "ucal_getTimeZoneTransitionDate");
+    const auto ucal_getTimeZoneIDForWindowsIDRef =
+        AsProcAddress<ucal_getTimeZoneIDForWindowsID_func>(
+            icu_dll, "ucal_getTimeZoneIDForWindowsID");
     const auto ucal_getTZDataVersionRef =
         AsProcAddress<ucal_getTZDataVersion_func>(icu_dll,
                                                   "ucal_getTZDataVersion");
     const auto ucal_openRef =
         AsProcAddress<ucal_open_func>(icu_dll, "ucal_open");
     const auto ucal_setRef = AsProcAddress<ucal_set_func>(icu_dll, "ucal_set");
+    const auto ucal_setAttributeRef =
+        AsProcAddress<ucal_setAttribute_func>(icu_dll, "ucal_setAttribute");
+    const auto ucal_setDateTimeRef =
+        AsProcAddress<ucal_setDateTime_func>(icu_dll, "ucal_setDateTime");
     const auto ucal_setMillisRef =
         AsProcAddress<ucal_setMillis_func>(icu_dll, "ucal_setMillis");
-    const auto ucal_getMillisRef =
-        AsProcAddress<ucal_getMillis_func>(icu_dll, "ucal_getMillis");
-    auto ucal_getHostTimeZoneRef = AsProcAddress<ucal_getHostTimeZone_func>(
-        icu_dll, "ucal_getHostTimeZone");
-    const auto ucal_getTimeZoneIDForWindowsIDRef =
-        AsProcAddress<ucal_getTimeZoneIDForWindowsID_func>(
-            icu_dll, "ucal_getTimeZoneIDForWindowsID");
 
     if (!ucal_getHostTimeZoneRef) {
       // Note: ucal_getHostTimeZone can be unavailable on older Windows.
@@ -302,10 +371,12 @@ struct IcuFunctions final {
     }
 
     if (!ucal_clearRef || !ucal_cloneRef || !ucal_closeRef || !ucal_getRef ||
-        !ucal_getCanonicalTimeZoneIDRef || !ucal_getTimeZoneDisplayNameRef ||
+        !ucal_getAttributeRef || !ucal_getCanonicalTimeZoneIDRef ||
+        !ucal_getLimitRef || !ucal_getMillisRef ||
+        !ucal_getTimeZoneDisplayNameRef || !ucal_getTimeZoneIDForWindowsIDRef ||
         !ucal_getTimeZoneTransitionDateRef || !ucal_getTZDataVersionRef ||
-        !ucal_openRef || !ucal_setRef || !ucal_setMillisRef ||
-        !ucal_getMillisRef || !ucal_getTimeZoneIDForWindowsIDRef) {
+        !ucal_openRef || !ucal_setRef || !ucal_setAttributeRef ||
+        !ucal_setDateTimeRef || !ucal_setMillisRef) {
       g_unavailable.store(true, std::memory_order_relaxed);
       return IcuFunctions::Unavailable();
     }
@@ -315,38 +386,46 @@ struct IcuFunctions final {
     g_ucal_clone.store(ucal_cloneRef, std::memory_order_relaxed);
     g_ucal_close.store(ucal_closeRef, std::memory_order_relaxed);
     g_ucal_get.store(ucal_getRef, std::memory_order_relaxed);
+    g_ucal_getAttribute.store(ucal_getAttributeRef, std::memory_order_relaxed);
     g_ucal_getCanonicalTimeZoneID.store(ucal_getCanonicalTimeZoneIDRef,
                                         std::memory_order_relaxed);
+    g_ucal_getHostTimeZone.store(ucal_getHostTimeZoneRef,
+                                 std::memory_order_relaxed);
+    g_ucal_getLimit.store(ucal_getLimitRef, std::memory_order_relaxed);
+    g_ucal_getMillis.store(ucal_getMillisRef, std::memory_order_relaxed);
     g_ucal_getTimeZoneDisplayName.store(ucal_getTimeZoneDisplayNameRef,
                                         std::memory_order_relaxed);
+    g_ucal_getTimeZoneIDForWindowsID.store(ucal_getTimeZoneIDForWindowsIDRef,
+                                           std::memory_order_relaxed);
     g_ucal_getTimeZoneTransitionDate.store(ucal_getTimeZoneTransitionDateRef,
                                            std::memory_order_relaxed);
     g_ucal_getTZDataVersion.store(ucal_getTZDataVersionRef,
                                   std::memory_order_relaxed);
     g_ucal_open.store(ucal_openRef, std::memory_order_relaxed);
     g_ucal_set.store(ucal_setRef, std::memory_order_relaxed);
+    g_ucal_setAttribute.store(ucal_setAttributeRef, std::memory_order_relaxed);
+    g_ucal_setDateTime.store(ucal_setDateTimeRef, std::memory_order_relaxed);
     g_ucal_setMillis.store(ucal_setMillisRef, std::memory_order_relaxed);
-    g_ucal_getMillis.store(ucal_getMillisRef, std::memory_order_relaxed);
-    g_ucal_getHostTimeZone.store(ucal_getHostTimeZoneRef,
-                                 std::memory_order_relaxed);
-    g_ucal_getTimeZoneIDForWindowsID.store(ucal_getTimeZoneIDForWindowsIDRef,
-                                           std::memory_order_relaxed);
 
     return {true,
             ucal_clearRef,
             ucal_cloneRef,
             ucal_closeRef,
             ucal_getRef,
+            ucal_getAttributeRef,
             ucal_getCanonicalTimeZoneIDRef,
+            ucal_getHostTimeZoneRef,
+            ucal_getLimitRef,
+            ucal_getMillisRef,
             ucal_getTimeZoneDisplayNameRef,
+            ucal_getTimeZoneIDForWindowsIDRef,
             ucal_getTimeZoneTransitionDateRef,
             ucal_getTZDataVersionRef,
             ucal_openRef,
             ucal_setRef,
-            ucal_setMillisRef,
-            ucal_getMillisRef,
-            ucal_getHostTimeZoneRef,
-            ucal_getTimeZoneIDForWindowsIDRef};
+            ucal_setAttributeRef,
+            ucal_setDateTimeRef,
+            ucal_setMillisRef};
   }
 };
 
@@ -410,7 +489,7 @@ std::string Utf16ToUtf8(const wchar_t* ptr, size_t size) {
   return std::string(buffer.get(), num_written_bytes);
 }
 
-inline UDate ToUDate(const time_point<seconds>& tp) {
+UDate ToUDate(const time_point<seconds>& tp) {
   const auto tp_millis =
       std::chrono::time_point_cast<std::chrono::milliseconds>(tp);
   const auto epock_millis =
@@ -419,13 +498,56 @@ inline UDate ToUDate(const time_point<seconds>& tp) {
   return static_cast<UDate>((tp_millis - epock_millis).count());
 }
 
-inline time_point<seconds> FromUData(UDate t) {
+time_point<seconds> FromUData(UDate t) {
   const auto epock_milli =
       std::chrono::time_point_cast<std::chrono::milliseconds>(
           std::chrono::system_clock::from_time_t(0));
   const auto udata_milli = std::chrono::milliseconds(
       static_cast<std::chrono::milliseconds::rep>(std::floor(t)));
   return std::chrono::time_point_cast<seconds>(epock_milli + udata_milli);
+}
+
+bool GetMillisFromLocalTime(const IcuFunctions& icu, UCalendar* ptr,
+                            cctz::civil_second local_time,
+                            UCalendarWallTimeOption repeated_wall_time,
+                            UCalendarWallTimeOption skipped_wall_time,
+                            bool lenient, UDate* millis) {
+  const int32_t local_year = static_cast<int32_t>(local_time.year());
+
+  UErrorCode status = U_ZERO_ERROR;
+
+  if (repeated_wall_time != UCAL_WALLTIME_LAST) {
+    icu.ucal_setAttribute(ptr, UCAL_REPEATED_WALL_TIME, repeated_wall_time);
+  }
+  if (skipped_wall_time != UCAL_WALLTIME_LAST) {
+    icu.ucal_setAttribute(ptr, UCAL_SKIPPED_WALL_TIME, repeated_wall_time);
+  }
+  if (!lenient) {
+    icu.ucal_setAttribute(ptr, UCAL_LENIENT, 0);
+  }
+
+  icu.ucal_clear(ptr);
+  icu.ucal_set(ptr, UCAL_MILLISECOND, 0);
+  icu.ucal_setDateTime(ptr, local_year, local_time.month() - 1,
+                       local_time.day(), local_time.hour(), local_time.minute(),
+                       local_time.second(), &status);
+  if (U_SUCCESS(status)) {
+    status = U_ZERO_ERROR;
+    *millis = icu.ucal_getMillis(ptr, &status);
+  }
+  const bool result = U_SUCCESS(status);
+
+  if (repeated_wall_time != UCAL_WALLTIME_LAST) {
+    icu.ucal_setAttribute(ptr, UCAL_REPEATED_WALL_TIME, UCAL_WALLTIME_LAST);
+  }
+  if (skipped_wall_time != UCAL_WALLTIME_LAST) {
+    icu.ucal_setAttribute(ptr, UCAL_SKIPPED_WALL_TIME, UCAL_WALLTIME_LAST);
+  }
+  if (!lenient) {
+    icu.ucal_setAttribute(ptr, UCAL_LENIENT, 1);
+  }
+
+  return result;
 }
 
 struct icu_civil_transition final {
@@ -563,115 +685,85 @@ class ThreadLocalUCalendarOperation final {
   }
 
   bool NextTransition(UDate date, icu_civil_transition* trans) {
-    if (!SetMillis(date)) {
-      return false;
+    UDate next_date = date;
+    while (true) {
+      if (!SetMillis(next_date)) {
+        return false;
+      }
+      UDate transition = 0;
+      UErrorCode status = U_ZERO_ERROR;
+      UBool result = icu_.ucal_getTimeZoneTransitionDate(
+          ptr_, UCAL_TZ_TRANSITION_NEXT, &transition, &status);
+      if (!result || U_FAILURE(status)) {
+        return false;
+      }
+      if (IsRealTransition(transition)) {
+        return GetTransitionLocalTime(transition, trans);
+      }
+      next_date = transition;
     }
-
-    UDate date_rounded = 0;
-    if (!GetMillis(&date_rounded)) {
-      return false;
-    }
-    if (date_rounded < date) {
-      return false;
-    }
-
-    UDate transition = 0;
-    UErrorCode status = U_ZERO_ERROR;
-    UBool result = icu_.ucal_getTimeZoneTransitionDate(
-        ptr_, UCAL_TZ_TRANSITION_NEXT_INCLUSIVE, &transition, &status);
-    if (!result || U_FAILURE(status)) {
-      return false;
-    }
-    if (transition == date) {
-      return false;
-    }
-
-    int32_t transition_millisecond_from = 0;
-    cctz::civil_second transition_localtime_from;
-    if (!GetDateTime(transition - 1, &transition_localtime_from,
-                     &transition_millisecond_from)) {
-      return false;
-    }
-    if (transition_millisecond_from == 999) {
-      transition_localtime_from += 1;
-    }
-    int32_t transition_millisecond_to = 0;
-    cctz::civil_second transition_localtime_to;
-    if (!GetDateTime(transition, &transition_localtime_to,
-                     &transition_millisecond_to)) {
-      return false;
-    }
-    trans->from = transition_localtime_from;
-    trans->to = transition_localtime_to;
-    return true;
   }
 
   bool PrevTransition(UDate date, icu_civil_transition* trans) {
-    if (!SetMillis(date)) {
+    UDate next_date = date;
+    while (true) {
+      if (!SetMillis(next_date)) {
+        return false;
+      }
+      UDate transition = 0;
+      UErrorCode status = U_ZERO_ERROR;
+      UBool result = icu_.ucal_getTimeZoneTransitionDate(
+          ptr_, UCAL_TZ_TRANSITION_PREVIOUS, &transition, &status);
+      if (!result || U_FAILURE(status)) {
+        return false;
+      }
+      if (IsRealTransition(transition)) {
+        return GetTransitionLocalTime(transition, trans);
+      }
+      next_date = transition;
+    }
+  }
+
+  bool IsRealTransition(UDate date) {
+    icu_absolute_lookup lookup_prev;
+    if (!BreakTime(date - 1.0, &lookup_prev)) {
       return false;
     }
 
-    UDate date_rounded = 0;
-    if (!GetMillis(&date_rounded)) {
-      return false;
-    }
-    if (date < date_rounded) {
+    icu_absolute_lookup lookup_transition;
+    if (!BreakTime(date, &lookup_transition)) {
       return false;
     }
 
-    UDate transition = 0;
-    UErrorCode status = U_ZERO_ERROR;
-    UBool result = icu_.ucal_getTimeZoneTransitionDate(
-        ptr_, UCAL_TZ_TRANSITION_PREVIOUS_INCLUSIVE, &transition, &status);
-    if (!result || U_FAILURE(status)) {
-      return false;
+    if (lookup_prev.abbr != lookup_transition.abbr) {
+      return true;
     }
-    if (transition == date) {
-      return false;
+    if (lookup_prev.is_dst != lookup_transition.is_dst) {
+      return true;
     }
-
-    int32_t transition_millisecond_from = 0;
-    cctz::civil_second transition_localtime_from;
-    if (!GetDateTime(transition - 1, &transition_localtime_from,
-                     &transition_millisecond_from)) {
-      return false;
+    if (lookup_prev.offset != lookup_transition.offset) {
+      return true;
     }
-    if (transition_millisecond_from == 999) {
-      transition_localtime_from += 1;
-    }
-    int32_t transition_millisecond_to = 0;
-    cctz::civil_second transition_localtime_to;
-    if (!GetDateTime(transition, &transition_localtime_to,
-                     &transition_millisecond_to)) {
-      return false;
-    }
-    trans->from = transition_localtime_from;
-    trans->to = transition_localtime_to;
-    trans->date = transition;
-    return true;
+    return false;
   }
 
   bool BreakTime(UDate date, icu_absolute_lookup* lookup_result) {
     cctz::civil_second local_time;
-    if (!GetDateTime(date, &local_time, nullptr)) {
-      return false;
-    }
-    UErrorCode status = U_ZERO_ERROR;
-    int32_t offset_milli = icu_.ucal_get(ptr_, UCAL_ZONE_OFFSET, &status);
-    if (U_FAILURE(status)) {
-      return false;
-    }
-    status = U_ZERO_ERROR;
-    int32_t dst_offset_milli = icu_.ucal_get(ptr_, UCAL_DST_OFFSET, &status);
-    if (U_FAILURE(status)) {
+    int32_t offset_milli = 0;
+    int32_t dst_offset_milli = 0;
+    std::string abbr;
+    if (!GetLocaltimeInfo(date, &local_time, nullptr, &offset_milli,
+                          &dst_offset_milli, &abbr)) {
       return false;
     }
     offset_milli += dst_offset_milli;
     const bool is_dst = dst_offset_milli != 0;
-
+    const UCalendarDisplayNameType abbr_type =
+        is_dst ? UCalendarDisplayNameType::UCAL_SHORT_DST
+               : UCalendarDisplayNameType::UCAL_SHORT_STANDARD;
     lookup_result->cs = local_time;
     lookup_result->is_dst = is_dst;
-    lookup_result->abbr = GetAbbr(is_dst);
+    lookup_result->abbr = GetTimeZoneDisplayName(abbr_type);
     lookup_result->offset = static_cast<int>(std::floor(offset_milli / 1000.0));
     return true;
   }
@@ -683,60 +775,62 @@ class ThreadLocalUCalendarOperation final {
       return false;
     }
 
-    const int32_t local_year = static_cast<int32_t>(local_time.year());
-    icu_.ucal_clear(ptr_);
-    icu_.ucal_set(ptr_, UCAL_YEAR, local_year);
-    icu_.ucal_set(ptr_, UCAL_MONTH, local_time.month() - 1);
-    icu_.ucal_set(ptr_, UCAL_DAY_OF_MONTH, local_time.day());
-    icu_.ucal_set(ptr_, UCAL_HOUR, local_time.hour());
-    icu_.ucal_set(ptr_, UCAL_MINUTE, local_time.minute());
-    icu_.ucal_set(ptr_, UCAL_SECOND, local_time.second());
-    icu_.ucal_set(ptr_, UCAL_MILLISECOND, 0);
-    UDate date = icu_.ucal_getMillis(ptr_, &status);
-    icu_.ucal_clear(ptr_);
-    if (!U_SUCCESS(status)) {
+    UDate millis_first_first = 0.0;
+    if (!GetMillisFromLocalTime(icu_, ptr_, local_time, UCAL_WALLTIME_FIRST,
+                                UCAL_WALLTIME_FIRST, true,
+                                &millis_first_first)) {
       return false;
     }
 
-    icu_civil_transition prev_transition;
-    if (!PrevTransition(date, &prev_transition)) {
-      lookup_result->kind = time_zone::civil_lookup::UNIQUE;
-      lookup_result->pre = date;
-      lookup_result->trans = date;
-      lookup_result->post = date;
+    UDate millis_last_last = 0.0;
+    if (!GetMillisFromLocalTime(icu_, ptr_, local_time, UCAL_WALLTIME_LAST,
+                                UCAL_WALLTIME_LAST, true, &millis_last_last)) {
+      return false;
+    }
+
+    UDate millis_last_next = 0.0;
+    if (!GetMillisFromLocalTime(icu_, ptr_, local_time, UCAL_WALLTIME_LAST,
+                                UCAL_WALLTIME_NEXT_VALID, true,
+                                &millis_last_next)) {
+      return false;
+    }
+
+    if (millis_first_first == millis_last_last) {
+      lookup_result->kind = time_zone::civil_lookup::civil_kind::UNIQUE;
+      lookup_result->pre = millis_last_last;
+      lookup_result->trans = millis_last_last;
+      lookup_result->post = millis_last_last;
       return true;
     }
 
-    if ((prev_transition.from < prev_transition.to &&
-         prev_transition.to <= local_time) ||
-        (prev_transition.to < prev_transition.from &&
-         prev_transition.from <= local_time)) {
-      lookup_result->kind = time_zone::civil_lookup::UNIQUE;
-      lookup_result->pre = date;
-      lookup_result->trans = date;
-      lookup_result->post = date;
+    UDate millis_non_lenient = 0.0;
+    const bool has_millis_non_lenient =
+        GetMillisFromLocalTime(icu_, ptr_, local_time, UCAL_WALLTIME_FIRST,
+                               UCAL_WALLTIME_FIRST, false, &millis_non_lenient);
+
+    if (!has_millis_non_lenient) {
+      lookup_result->kind = time_zone::civil_lookup::civil_kind::SKIPPED;
+      lookup_result->pre = millis_first_first;
+      lookup_result->trans = millis_last_next;
+      lookup_result->post = millis_last_last;
       return true;
     }
 
-    if (prev_transition.from <= local_time && local_time < prev_transition.to) {
-      lookup_result->kind = time_zone::civil_lookup::SKIPPED;
-      lookup_result->pre = date;
-      lookup_result->trans = prev_transition.date;
-      lookup_result->post =
-          date - (prev_transition.to - prev_transition.from) * 1000;
-      return true;
+    if (!SetMillis(millis_first_first)) {
+      return false;
+    }
+    UDate transition = 0;
+    status = U_ZERO_ERROR;
+    UBool result = icu_.ucal_getTimeZoneTransitionDate(
+        ptr_, UCAL_TZ_TRANSITION_NEXT, &transition, &status);
+    if (!result || U_FAILURE(status)) {
+      return false;
     }
 
-#if defined(_DEBUG)
-    assert(prev_transition.to <= local_time);
-    assert(local_time < prev_transition.from);
-#endif
-
-    lookup_result->kind = time_zone::civil_lookup::REPEATED;
-    lookup_result->pre =
-        date - (prev_transition.from - prev_transition.to) * 1000;
-    lookup_result->trans = prev_transition.date;
-    lookup_result->post = date;
+    lookup_result->kind = time_zone::civil_lookup::civil_kind::REPEATED;
+    lookup_result->pre = millis_first_first;
+    lookup_result->trans = transition;
+    lookup_result->post = millis_last_last;
     return true;
   }
 
@@ -750,23 +844,16 @@ class ThreadLocalUCalendarOperation final {
     return true;
   }
 
-  bool GetMillis(double* millis) {
+  bool GetMillis(UDate* millis) {
     UErrorCode status = U_ZERO_ERROR;
     *millis = icu_.ucal_getMillis(ptr_, &status);
     return U_SUCCESS(status);
   }
 
-  bool GetDateTime(UDate date, cctz::civil_second* local_time,
-                   int32_t* local_millisecond) {
+  bool GetLocaltimeInfo(UDate date, cctz::civil_second* local_time,
+                        int32_t* local_millisecond, int32_t* offset_millisecond,
+                        int32_t* dst_offset_millisecond, std::string* abbr) {
     if (!SetMillis(date)) {
-      return false;
-    }
-
-    UDate date_rounded = 0;
-    if (!GetMillis(&date_rounded)) {
-      return false;
-    }
-    if (date_rounded != date) {
       return false;
     }
 
@@ -811,15 +898,37 @@ class ThreadLocalUCalendarOperation final {
     }
     *local_time = cctz::civil_second(civil_year, civil_month, civil_day,
                                      civil_hour, civil_minute, civil_second);
+    if (offset_millisecond != nullptr) {
+      status = U_ZERO_ERROR;
+      *offset_millisecond = icu_.ucal_get(ptr_, UCAL_ZONE_OFFSET, &status);
+      if (U_FAILURE(status)) {
+        return false;
+      }
+    }
+    if (dst_offset_millisecond != nullptr || abbr != nullptr) {
+      status = U_ZERO_ERROR;
+      const int32_t tmp_dst_offset_millisecond =
+          icu_.ucal_get(ptr_, UCAL_DST_OFFSET, &status);
+      if (U_FAILURE(status)) {
+        return false;
+      }
+      if (dst_offset_millisecond != nullptr) {
+        *dst_offset_millisecond = tmp_dst_offset_millisecond;
+      }
+      if (abbr != nullptr) {
+        const UCalendarDisplayNameType abbr_type =
+            tmp_dst_offset_millisecond != 0
+                ? UCalendarDisplayNameType::UCAL_SHORT_DST
+                : UCalendarDisplayNameType::UCAL_SHORT_STANDARD;
+        *abbr = GetTimeZoneDisplayName(abbr_type);
+      }
+    }
     return true;
   }
 
-  std::string GetAbbr(bool is_dst) const {
+  std::string GetTimeZoneDisplayName(UCalendarDisplayNameType type) const {
     UErrorCode status = U_ZERO_ERROR;
 
-    const UCalendarDisplayNameType type =
-        is_dst ? UCalendarDisplayNameType::UCAL_SHORT_DST
-               : UCalendarDisplayNameType::UCAL_SHORT_STANDARD;
     int length = 0;
     {
       const int buffer_size = 16;
@@ -845,6 +954,31 @@ class ThreadLocalUCalendarOperation final {
     return Utf16ToUtf8(buffer.get(), length);
   }
 
+  bool GetTransitionLocalTime(UDate date, icu_civil_transition* trans) {
+    cctz::civil_second transition_from;
+    int32_t transition_millisecond_from = 0;
+    cctz::civil_second transition_localtime_from;
+    if (!GetLocaltimeInfo(date - 1.0, &transition_from,
+                          &transition_millisecond_from, nullptr, nullptr,
+                          nullptr)) {
+      return false;
+    }
+    if (transition_millisecond_from == 999) {
+      transition_from += 1;
+    }
+    cctz::civil_second transition_to;
+    int32_t transition_millisecond_to = 0;
+    cctz::civil_second transition_localtime_to;
+    if (!GetLocaltimeInfo(date, &transition_to, &transition_millisecond_to,
+                          nullptr, nullptr, nullptr)) {
+      return false;
+    }
+    trans->date = date;
+    trans->from = transition_from;
+    trans->to = transition_to;
+    return true;
+  }
+
   UCalendar* ptr_;
   UCalendar** cache_ptr_;
   const IcuFunctions& icu_;
@@ -853,11 +987,12 @@ class ThreadLocalUCalendarOperation final {
 // This class provides the same way to obtain `ThreadLocalUCalendarOperation`
 // with optional object recycling.
 //
-// When accessing this object from a different thread than the one that created
-// it, the "Happens-Before" relationship must be ensured in a higher layer (e.g.
-// with `std::atomic` or `std::mutex`). The following implementation assumes
-// that all the memory writes before instantiating this object are visible to
-// all threads that access it.
+// Even in the worst case scenario, the `ReuseOrNew` method uses `ucal_clone`
+// to create a new `UCalendar` object, which should be much faster than calling
+// `ucal_open` every time that is MSSTL is currently suffering from.
+// https://github.com/microsoft/STL/blob/5f8b52546480a01d1d9be6c033e31dfce48d4f13/stl/src/tzdb.cpp#L509-L514
+// https://github.com/microsoft/STL/blob/5f8b52546480a01d1d9be6c033e31dfce48d4f13/stl/src/tzdb.cpp#L311-L326
+// https://unicode-org.github.io/icu/userguide/icu/design.html#clone-vs-open
 class UCalendarOperationFactory final {
  public:
   UCalendarOperationFactory() = delete;
@@ -898,9 +1033,12 @@ class UCalendarOperationFactory final {
     }
     // The key assumption here is that `prototype_` can be safely cloned with
     // `ucal_clone` even when accessed from a thread where `prototype_` was
-    // created. Here we rely on the transitivity in "Happens-Before"
-    // relationships by not modifying `prototype_` after its creation.
+    // created.
     // https://unicode-org.github.io/icu/userguide/icu/design.html#thread-safe-const-apis
+    // 1. UCalendarOperationFactory is created in the thread X. During the
+    //    creation, all the memory writes within `prototype_` should happen.
+    // 2. Ensure cross-thread happens-before with std::atomic or std::mutex.
+    // 3. UCalendarOperationFactory::ReuseOrNew is called in the thread Y.
     UErrorCode status = U_ZERO_ERROR;
     UCalendar* clone = icu_.ucal_clone(prototype_.get(), &status);
     if (U_FAILURE(status) || clone == nullptr) {
@@ -918,8 +1056,12 @@ class UCalendarOperationFactory final {
 
 class TimeZoneIcuWin final : public TimeZoneIf {
  public:
-  TimeZoneIcuWin(IcuFunctions icu, IcuFunctions::ScopedUCalendar prototype)
-      : icu_(icu), calendar_ops_(std::move(prototype), icu) {}
+  TimeZoneIcuWin(IcuFunctions icu, IcuFunctions::ScopedUCalendar prototype,
+                 time_point<seconds> min_date, time_point<seconds> max_date)
+      : icu_(icu),
+        calendar_ops_(std::move(prototype), icu),
+        min_date_(min_date),
+        max_date_(max_date) {}
   TimeZoneIcuWin(const TimeZoneIcuWin&) = delete;
   TimeZoneIcuWin(TimeZoneIcuWin&&) = delete;
   TimeZoneIcuWin& operator=(const TimeZoneIcuWin&) = delete;
@@ -933,7 +1075,29 @@ class TimeZoneIcuWin final : public TimeZoneIf {
     if (!cal) {
       return nullptr;
     }
-    return std::make_unique<TimeZoneIcuWin>(icu, std::move(cal));
+
+    UErrorCode status = U_ZERO_ERROR;
+    UCalendar* clone = icu.ucal_clone(cal.get(), &status);
+
+    cctz::civil_second min_local_time;
+    GetLimitDate(clone, icu, UCAL_MINIMUM, &min_local_time);
+    cctz::civil_second max_local_time;
+    GetLimitDate(cal.get(), icu, UCAL_MAXIMUM, &max_local_time);
+    max_local_time =
+        cctz::civil_second(cctz::year_t(2500), max_local_time.month(),
+                           max_local_time.day(), max_local_time.hour(),
+                           max_local_time.minute(), max_local_time.second());
+
+    UDate min_date = 0.0;
+    UDate max_date = 0.0;
+    GetMillisFromLocalTime(icu, clone, min_local_time, UCAL_WALLTIME_FIRST,
+                           UCAL_WALLTIME_FIRST, true, &min_date);
+    GetMillisFromLocalTime(icu, clone, max_local_time, UCAL_WALLTIME_FIRST,
+                           UCAL_WALLTIME_FIRST, true, &max_date);
+    icu.ucal_close(clone);
+
+    return std::make_unique<TimeZoneIcuWin>(
+        icu, std::move(cal), FromUData(min_date), FromUData(max_date));
   }
 
   // TimeZoneIf implementations.
@@ -966,9 +1130,13 @@ class TimeZoneIcuWin final : public TimeZoneIf {
 
   bool NextTransition(const time_point<seconds>& tp,
                       time_zone::civil_transition* trans) const override {
+    if (max_date_ <= tp) {
+      return false;
+    }
+    const time_point<seconds> normalized_tp = tp < min_date_ ? min_date_ : tp;
     icu_civil_transition transition;
     if (!calendar_ops_.ReuseOrNew().NextTransition(
-            tp.time_since_epoch().count() * 1000.0, &transition)) {
+            normalized_tp.time_since_epoch().count() * 1000.0, &transition)) {
       return false;
     }
     trans->from = transition.from;
@@ -978,9 +1146,13 @@ class TimeZoneIcuWin final : public TimeZoneIf {
 
   bool PrevTransition(const time_point<seconds>& tp,
                       time_zone::civil_transition* trans) const override {
+    if (tp <= min_date_) {
+      return false;
+    }
+    const time_point<seconds> normalized_tp = max_date_ < tp ? max_date_ : tp;
     icu_civil_transition transition;
     if (!calendar_ops_.ReuseOrNew().PrevTransition(
-            tp.time_since_epoch().count() * 1000.0, &transition)) {
+            normalized_tp.time_since_epoch().count() * 1000.0, &transition)) {
       return false;
     }
     trans->from = transition.from;
@@ -1000,6 +1172,52 @@ class TimeZoneIcuWin final : public TimeZoneIf {
   std::string Description() const override { return std::string(); }
 
  private:
+  static bool GetLimitDate(const UCalendar* cal, const IcuFunctions& icu,
+                           UCalendarLimitType type,
+                           cctz::civil_second* local_time) {
+    UErrorCode status = U_ZERO_ERROR;
+
+    status = U_ZERO_ERROR;
+    const int32_t year = icu.ucal_getLimit(cal, UCAL_YEAR, type, &status);
+    if (U_FAILURE(status)) {
+      return false;
+    }
+
+    status = U_ZERO_ERROR;
+    const int32_t month = icu.ucal_getLimit(cal, UCAL_MONTH, type, &status) + 1;
+    if (U_FAILURE(status)) {
+      return false;
+    }
+
+    status = U_ZERO_ERROR;
+    const int32_t date =
+        icu.ucal_getLimit(cal, UCAL_DAY_OF_MONTH, type, &status);
+    if (U_FAILURE(status)) {
+      return false;
+    }
+
+    status = U_ZERO_ERROR;
+    const int32_t hour = icu.ucal_getLimit(cal, UCAL_HOUR, type, &status);
+    if (U_FAILURE(status)) {
+      return false;
+    }
+
+    status = U_ZERO_ERROR;
+    const int32_t minute = icu.ucal_getLimit(cal, UCAL_MINUTE, type, &status);
+    if (U_FAILURE(status)) {
+      return false;
+    }
+
+    status = U_ZERO_ERROR;
+    const int32_t second = icu.ucal_getLimit(cal, UCAL_SECOND, type, &status);
+    if (U_FAILURE(status)) {
+      return false;
+    }
+
+    *local_time = cctz::civil_second(year, month, date, hour, minute, second);
+    return true;
+  }
+
   static IcuFunctions::ScopedUCalendar OpenCalendar(const IcuFunctions& icu,
                                                     const std::string& name) {
     auto zone_id = Utf8ToUtf16(name);
@@ -1054,6 +1272,8 @@ class TimeZoneIcuWin final : public TimeZoneIf {
 
   const IcuFunctions icu_;
   const UCalendarOperationFactory calendar_ops_;
+  const time_point<seconds> min_date_;
+  const time_point<seconds> max_date_;
   mutable ShortStringPool string_holder_;
 };
 
