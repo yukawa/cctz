@@ -646,6 +646,8 @@ TEST(NextTransition, Scan) {
 
     auto tp = time_point<cctz::seconds>::min();
     time_zone::civil_transition trans;
+
+    bool jumped_to_last = false;
     while (tz.next_transition(tp, &trans)) {
       time_zone::civil_lookup from_cl = tz.lookup(trans.from);
       EXPECT_NE(from_cl.kind, time_zone::civil_lookup::REPEATED);
@@ -670,6 +672,18 @@ TEST(NextTransition, Scan) {
       }
 
       tp = trans_tp;  // continue scan from transition
+
+      // If we found the scan reached to the year 2450, jump to almost the end
+      // of the loop with prev_transition.
+      if (!jumped_to_last && trans.to.year() > 2450) {
+        tp = time_point<cctz::seconds>::max();
+        for (size_t i = 0; i < 3; ++i) {
+          if (tz.prev_transition(tp, &trans)) {
+            tp = tz.lookup(trans.to).trans;
+          }
+        }
+        jumped_to_last = true;
+      }
     }
   }
 }

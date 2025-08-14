@@ -452,7 +452,7 @@ std::wstring Utf8ToUtf16(const std::string& utf8str) {
     }
   }
 
-  auto ustr = std::make_unique<UChar[]>(num_counts);
+  auto ustr = std::unique_ptr<UChar[]>(new UChar[num_counts]);
   const int written_counts =
       ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8str_ptr,
                             utf8str_len, ustr.get(), num_counts);
@@ -479,7 +479,7 @@ std::string Utf16ToUtf8(const wchar_t* ptr, size_t size) {
       return std::string(buffer, num_bytes_in_utf8);
     }
   }
-  auto buffer = std::make_unique<char[]>(num_bytes_in_utf8);
+  auto buffer = std::unique_ptr<char[]>(new char[num_bytes_in_utf8]);
   const int num_written_bytes =
       ::WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, ptr, chars_len,
                             buffer.get(), num_bytes_in_utf8, nullptr, nullptr);
@@ -490,12 +490,10 @@ std::string Utf16ToUtf8(const wchar_t* ptr, size_t size) {
 }
 
 UDate ToUDate(const time_point<seconds>& tp) {
-  const auto tp_millis =
-      std::chrono::time_point_cast<std::chrono::milliseconds>(tp);
-  const auto epock_millis =
-      std::chrono::time_point_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::from_time_t(0));
-  return static_cast<UDate>((tp_millis - epock_millis).count());
+  const auto tp_sec = std::chrono::time_point_cast<std::chrono::seconds>(tp);
+  const auto epock_sec = std::chrono::time_point_cast<std::chrono::seconds>(
+      std::chrono::system_clock::from_time_t(0));
+  return static_cast<UDate>((tp_sec - epock_sec).count()) * 1000.0;
 }
 
 time_point<seconds> FromUData(UDate t) {
@@ -684,9 +682,12 @@ class ThreadLocalUCalendarOperation final {
     }
   }
 
-  bool NextTransition(UDate date, icu_civil_transition* trans) {
+  bool NextTransition(UDate date, UDate max_date, icu_civil_transition* trans) {
     UDate next_date = date;
     while (true) {
+      if (next_date >= max_date) {
+        return false;
+      }
       if (!SetMillis(next_date)) {
         return false;
       }
@@ -704,9 +705,12 @@ class ThreadLocalUCalendarOperation final {
     }
   }
 
-  bool PrevTransition(UDate date, icu_civil_transition* trans) {
+  bool PrevTransition(UDate date, UDate min_date, icu_civil_transition* trans) {
     UDate next_date = date;
     while (true) {
+      if (next_date <= min_date) {
+        return false;
+      }
       if (!SetMillis(next_date)) {
         return false;
       }
@@ -722,29 +726,6 @@ class ThreadLocalUCalendarOperation final {
       }
       next_date = transition;
     }
-  }
-
-  bool IsRealTransition(UDate date) {
-    icu_absolute_lookup lookup_prev;
-    if (!BreakTime(date - 1.0, &lookup_prev)) {
-      return false;
-    }
-
-    icu_absolute_lookup lookup_transition;
-    if (!BreakTime(date, &lookup_transition)) {
-      return false;
-    }
-
-    if (lookup_prev.abbr != lookup_transition.abbr) {
-      return true;
-    }
-    if (lookup_prev.is_dst != lookup_transition.is_dst) {
-      return true;
-    }
-    if (lookup_prev.offset != lookup_transition.offset) {
-      return true;
-    }
-    return false;
   }
 
   bool BreakTime(UDate date, icu_absolute_lookup* lookup_result) {
@@ -831,6 +812,31 @@ class ThreadLocalUCalendarOperation final {
     lookup_result->pre = millis_first_first;
     lookup_result->trans = transition;
     lookup_result->post = millis_last_last;
+    return true;
+  }
+
+  bool GetTransitionLocalTime(UDate date, icu_civil_transition* trans) {
+    cctz::civil_second transition_from;
+    int32_t transition_millisecond_from = 0;
+    cctz::civil_second transition_localtime_from;
+    if (!GetLocaltimeInfo(date - 1.0, &transition_from,
+                          &transition_millisecond_from, nullptr, nullptr,
+                          nullptr)) {
+      return false;
+    }
+    if (transition_millisecond_from == 999) {
+      transition_from += 1;
+    }
+    cctz::civil_second transition_to;
+    int32_t transition_millisecond_to = 0;
+    cctz::civil_second transition_localtime_to;
+    if (!GetLocaltimeInfo(date, &transition_to, &transition_millisecond_to,
+                          nullptr, nullptr, nullptr)) {
+      return false;
+    }
+    trans->date = date;
+    trans->from = transition_from;
+    trans->to = transition_to;
     return true;
   }
 
@@ -944,7 +950,7 @@ class ThreadLocalUCalendarOperation final {
     }
 
     const int buffer_size = length + 1;  // +1 for null terminator
-    auto buffer = std::make_unique<UChar[]>(buffer_size);
+    auto buffer = std::unique_ptr<UChar[]>(new UChar[buffer_size]);
     status = U_ZERO_ERROR;
     length = icu_.ucal_getTimeZoneDisplayName(ptr_, type, nullptr, buffer.get(),
                                               buffer_size, &status);
@@ -954,29 +960,27 @@ class ThreadLocalUCalendarOperation final {
     return Utf16ToUtf8(buffer.get(), length);
   }
 
-  bool GetTransitionLocalTime(UDate date, icu_civil_transition* trans) {
-    cctz::civil_second transition_from;
-    int32_t transition_millisecond_from = 0;
-    cctz::civil_second transition_localtime_from;
-    if (!GetLocaltimeInfo(date - 1.0, &transition_from,
-                          &transition_millisecond_from, nullptr, nullptr,
-                          nullptr)) {
+  bool IsRealTransition(UDate date) {
+    icu_absolute_lookup lookup_prev;
+    if (!BreakTime(date - 1.0, &lookup_prev)) {
       return false;
     }
-    if (transition_millisecond_from == 999) {
-      transition_from += 1;
-    }
-    cctz::civil_second transition_to;
-    int32_t transition_millisecond_to = 0;
-    cctz::civil_second transition_localtime_to;
-    if (!GetLocaltimeInfo(date, &transition_to, &transition_millisecond_to,
-                          nullptr, nullptr, nullptr)) {
+
+    icu_absolute_lookup lookup_transition;
+    if (!BreakTime(date, &lookup_transition)) {
       return false;
     }
-    trans->date = date;
-    trans->from = transition_from;
-    trans->to = transition_to;
-    return true;
+
+    if (lookup_prev.abbr != lookup_transition.abbr) {
+      return true;
+    }
+    if (lookup_prev.is_dst != lookup_transition.is_dst) {
+      return true;
+    }
+    if (lookup_prev.offset != lookup_transition.offset) {
+      return true;
+    }
+    return false;
   }
 
   UCalendar* ptr_;
@@ -1057,11 +1061,21 @@ class UCalendarOperationFactory final {
 class TimeZoneIcuWin final : public TimeZoneIf {
  public:
   TimeZoneIcuWin(IcuFunctions icu, IcuFunctions::ScopedUCalendar prototype,
-                 time_point<seconds> min_date, time_point<seconds> max_date)
+                 cctz::civil_second min_local_time,
+                 cctz::civil_second max_local_time, UDate min_date,
+                 UDate max_date, bool has_min_transition,
+                 bool has_max_transition, UDate min_transation,
+                 UDate max_transition)
       : icu_(icu),
         calendar_ops_(std::move(prototype), icu),
+        min_local_time_(min_local_time),
+        max_local_time_(max_local_time),
         min_date_(min_date),
-        max_date_(max_date) {}
+        max_date_(max_date),
+        has_min_transition_(has_min_transition),
+        has_max_transition_(has_max_transition),
+        min_transition_(min_transation),
+        max_transition_(max_transition) {}
   TimeZoneIcuWin(const TimeZoneIcuWin&) = delete;
   TimeZoneIcuWin(TimeZoneIcuWin&&) = delete;
   TimeZoneIcuWin& operator=(const TimeZoneIcuWin&) = delete;
@@ -1082,11 +1096,7 @@ class TimeZoneIcuWin final : public TimeZoneIf {
     cctz::civil_second min_local_time;
     GetLimitDate(clone, icu, UCAL_MINIMUM, &min_local_time);
     cctz::civil_second max_local_time;
-    GetLimitDate(cal.get(), icu, UCAL_MAXIMUM, &max_local_time);
-    max_local_time =
-        cctz::civil_second(cctz::year_t(2500), max_local_time.month(),
-                           max_local_time.day(), max_local_time.hour(),
-                           max_local_time.minute(), max_local_time.second());
+    GetLimitDate(clone, icu, UCAL_MAXIMUM, &max_local_time);
 
     UDate min_date = 0.0;
     UDate max_date = 0.0;
@@ -1094,18 +1104,43 @@ class TimeZoneIcuWin final : public TimeZoneIf {
                            UCAL_WALLTIME_FIRST, true, &min_date);
     GetMillisFromLocalTime(icu, clone, max_local_time, UCAL_WALLTIME_FIRST,
                            UCAL_WALLTIME_FIRST, true, &max_date);
+
+    UDate max_transition = 0.0;
+    UDate min_transition = 0.0;
+
+    status = U_ZERO_ERROR;
+    icu.ucal_setMillis(clone, min_date, &status);
+    if (U_FAILURE(status)) {
+      return nullptr;
+    }
+    status = U_ZERO_ERROR;
+    UBool result = icu.ucal_getTimeZoneTransitionDate(
+        clone, UCAL_TZ_TRANSITION_NEXT, &min_transition, &status);
+    const bool has_min_transition = U_SUCCESS(status) && result;
+    status = U_ZERO_ERROR;
+    icu.ucal_setMillis(clone, max_date, &status);
+    if (U_FAILURE(status)) {
+      return nullptr;
+    }
+    status = U_ZERO_ERROR;
+    result = icu.ucal_getTimeZoneTransitionDate(
+        clone, UCAL_TZ_TRANSITION_PREVIOUS, &max_transition, &status);
+    const bool has_max_transition = U_SUCCESS(status) && result;
     icu.ucal_close(clone);
 
-    return std::make_unique<TimeZoneIcuWin>(
-        icu, std::move(cal), FromUData(min_date), FromUData(max_date));
+    return std::unique_ptr<TimeZoneIcuWin>(new TimeZoneIcuWin(
+        icu, std::move(cal), min_local_time, max_local_time, min_date, max_date,
+        has_min_transition, has_max_transition, min_transition, max_transition));
   }
 
   // TimeZoneIf implementations.
   time_zone::absolute_lookup BreakTime(
       const time_point<seconds>& tp) const override {
+    const UDate date = std::min(std::max(ToUDate(tp), min_date_), max_date_);
+
     time_zone::absolute_lookup result;
     icu_absolute_lookup lookup;
-    if (!calendar_ops_.ReuseOrNew().BreakTime(ToUDate(tp), &lookup)) {
+    if (!calendar_ops_.ReuseOrNew().BreakTime(date, &lookup)) {
       return result;
     }
 
@@ -1117,9 +1152,12 @@ class TimeZoneIcuWin final : public TimeZoneIf {
   }
 
   time_zone::civil_lookup MakeTime(const civil_second& cs) const override {
+    const civil_second normalized_cs =
+        cs < min_local_time_ ? min_local_time_
+                             : (max_local_time_ < cs ? max_local_time_ : cs);
     icu_civil_lookup lookup;
     time_zone::civil_lookup result;
-    if (calendar_ops_.ReuseOrNew().MakeTime(cs, &lookup)) {
+    if (calendar_ops_.ReuseOrNew().MakeTime(normalized_cs, &lookup)) {
       result.kind = lookup.kind;
       result.pre = FromUData(lookup.pre);
       result.trans = FromUData(lookup.trans);
@@ -1130,15 +1168,24 @@ class TimeZoneIcuWin final : public TimeZoneIf {
 
   bool NextTransition(const time_point<seconds>& tp,
                       time_zone::civil_transition* trans) const override {
-    if (max_date_ <= tp) {
+    const UDate target = ToUDate(tp);
+    if (has_max_transition_ && target >= max_transition_) {
       return false;
     }
-    const time_point<seconds> normalized_tp = tp < min_date_ ? min_date_ : tp;
+
     icu_civil_transition transition;
-    if (!calendar_ops_.ReuseOrNew().NextTransition(
-            normalized_tp.time_since_epoch().count() * 1000.0, &transition)) {
-      return false;
+    if (has_min_transition_ && target < min_transition_) {
+      if (!calendar_ops_.ReuseOrNew().GetTransitionLocalTime(min_transition_,
+                                                             &transition)) {
+        return false;
+      }
+    } else {
+      if (!calendar_ops_.ReuseOrNew().NextTransition(target, max_date_,
+                                                     &transition)) {
+        return false;
+      }
     }
+
     trans->from = transition.from;
     trans->to = transition.to;
     return true;
@@ -1146,15 +1193,23 @@ class TimeZoneIcuWin final : public TimeZoneIf {
 
   bool PrevTransition(const time_point<seconds>& tp,
                       time_zone::civil_transition* trans) const override {
-    if (tp <= min_date_) {
+    const UDate target = ToUDate(tp);
+    if (has_min_transition_ && target <= min_transition_) {
       return false;
     }
-    const time_point<seconds> normalized_tp = max_date_ < tp ? max_date_ : tp;
     icu_civil_transition transition;
-    if (!calendar_ops_.ReuseOrNew().PrevTransition(
-            normalized_tp.time_since_epoch().count() * 1000.0, &transition)) {
-      return false;
+    if (has_max_transition_ && max_transition_ < target) {
+      if (!calendar_ops_.ReuseOrNew().GetTransitionLocalTime(max_transition_,
+                                                             &transition)) {
+        return false;
+      }
+    } else {
+      if (!calendar_ops_.ReuseOrNew().PrevTransition(target, min_date_,
+                                                     &transition)) {
+        return false;
+      }
     }
+
     trans->from = transition.from;
     trans->to = transition.to;
     return true;
@@ -1253,7 +1308,7 @@ class TimeZoneIcuWin final : public TimeZoneIf {
     }
 
     const int buffer_size = length + 1;  // +1 for null terminator
-    auto buffer = std::make_unique<UChar[]>(buffer_size);
+    auto buffer = std::unique_ptr<UChar[]>(new UChar[buffer_size]);
     UBool is_system = false;
     status = U_ZERO_ERROR;
     length = icu.ucal_getCanonicalTimeZoneID(zone_id.c_str(), zone_id_size,
@@ -1272,8 +1327,14 @@ class TimeZoneIcuWin final : public TimeZoneIf {
 
   const IcuFunctions icu_;
   const UCalendarOperationFactory calendar_ops_;
-  const time_point<seconds> min_date_;
-  const time_point<seconds> max_date_;
+  const cctz::civil_second min_local_time_;
+  const cctz::civil_second max_local_time_;
+  const UDate min_date_;
+  const UDate max_date_;
+  const bool has_min_transition_;
+  const bool has_max_transition_;
+  const UDate min_transition_;
+  const UDate max_transition_;
   mutable ShortStringPool string_holder_;
 };
 
@@ -1299,7 +1360,7 @@ std::string GetWinLocalTimeZone() {
   }
   if (status == U_BUFFER_OVERFLOW_ERROR && length > 0) {
     const int buffer_size = length + 1;  // +1 for null terminator
-    auto buffer = std::make_unique<UChar[]>(buffer_size);
+    auto buffer = std::unique_ptr<UChar[]>(new UChar[buffer_size]);
     status = U_ZERO_ERROR;
     length = icu.ucal_getHostTimeZone(buffer.get(), buffer_size, &status);
     if (U_SUCCESS(status) && length >= 0) {
@@ -1326,7 +1387,7 @@ std::string GetWinLocalTimeZone() {
     }
   }
   const int buffer_size = length + 1;  // +1 for null terminator
-  auto buffer = std::make_unique<UChar[]>(buffer_size);
+  auto buffer = std::unique_ptr<UChar[]>(new UChar[buffer_size]);
   status = U_ZERO_ERROR;
   length = icu.ucal_getTimeZoneIDForWindowsID(
       info.TimeZoneKeyName, -1, nullptr, buffer.get(), buffer_size, &status);
