@@ -110,6 +110,9 @@ TEST(TimeZones, LoadZonesConcurrently) {
   // source when running on Android, where it is difficult to override
   // the bionic tzdata provided by the test environment.
   const std::size_t max_failures = 20;
+#elif defined(_WIN32) && defined(CCTZ_USE_WIN_ICU)
+  // "icu.dll" shipped with Windows may embed older zoneinfo data source.
+  const std::size_t max_failures = 4;
 #else
   const std::size_t max_failures = 3;
 #endif
@@ -451,6 +454,32 @@ TEST(MakeTime, SysSecondsLimits) {
   }
 }
 
+TEST(MakeTime, LookupKind) {
+  const time_zone tz = LoadZone("America/Los_Angeles");
+
+  // Spring 1:59:59 -> 3:00:00
+  auto lookup = tz.lookup(civil_second(2013, 3, 10, 1, 59, 59));
+  EXPECT_EQ(lookup.kind, time_zone::civil_lookup::UNIQUE);
+  lookup = tz.lookup(civil_second(2013, 3, 10, 2, 0, 0));
+  EXPECT_EQ(lookup.kind, time_zone::civil_lookup::SKIPPED);
+  lookup = tz.lookup(civil_second(2013, 3, 10, 2, 15, 0));
+  EXPECT_EQ(lookup.kind, time_zone::civil_lookup::SKIPPED);
+  lookup = tz.lookup(cctz::civil_second(2013, 6, 1, 3, 0, 0));
+  EXPECT_EQ(lookup.kind, time_zone::civil_lookup::UNIQUE);
+
+  // Fall 1:59:59 -> 1:00:00
+  lookup = tz.lookup(cctz::civil_second(2013, 11, 3, 0, 59, 59));
+  EXPECT_EQ(lookup.kind, time_zone::civil_lookup::UNIQUE);
+  lookup = tz.lookup(cctz::civil_second(2013, 11, 3, 1, 0, 0));
+  EXPECT_EQ(lookup.kind, time_zone::civil_lookup::REPEATED);
+  lookup = tz.lookup(cctz::civil_second(2013, 11, 3, 1, 30, 0));
+  EXPECT_EQ(lookup.kind, time_zone::civil_lookup::REPEATED);
+  lookup = tz.lookup(cctz::civil_second(2013, 11, 3, 1, 59, 59));
+  EXPECT_EQ(lookup.kind, time_zone::civil_lookup::REPEATED);
+  lookup = tz.lookup(cctz::civil_second(2013, 11, 3, 2, 0, 0));
+  EXPECT_EQ(lookup.kind, time_zone::civil_lookup::UNIQUE);
+}
+
 TEST(MakeTime, LocalTimeLibC) {
   // Checks that cctz and libc agree on transition points in [1970:2037].
   //
@@ -617,6 +646,8 @@ TEST(NextTransition, Scan) {
 
     auto tp = time_point<cctz::seconds>::min();
     time_zone::civil_transition trans;
+
+    bool jumped_to_last = false;
     while (tz.next_transition(tp, &trans)) {
       time_zone::civil_lookup from_cl = tz.lookup(trans.from);
       EXPECT_NE(from_cl.kind, time_zone::civil_lookup::REPEATED);
@@ -641,6 +672,18 @@ TEST(NextTransition, Scan) {
       }
 
       tp = trans_tp;  // continue scan from transition
+
+      // If we found the scan reached to the year 2450, jump to almost the end
+      // of the loop with prev_transition.
+      if (!jumped_to_last && trans.to.year() > 2450) {
+        tp = time_point<cctz::seconds>::max();
+        for (size_t i = 0; i < 3; ++i) {
+          if (tz.prev_transition(tp, &trans)) {
+            tp = tz.lookup(trans.to).trans;
+          }
+        }
+        jumped_to_last = true;
+      }
     }
   }
 }
@@ -839,6 +882,10 @@ TEST(TimeZoneEdgeCase, AmericaJamaica) {
 TEST(TimeZoneEdgeCase, EuropeLisbon) {
   // Cover a non-existent time within a forward transition.
   const time_zone tz = LoadZone("Europe/Lisbon");
+  if (tz.version() < "2024b") {
+    GTEST_SKIP() << "tzver=" << tz.version()
+        << ". Skipping test for Europe/Lisbon before 2024b.";
+  }
 
   // Over a forward transition.
   //     354671999 == Sat, 28 Mar 1981 23:59:59 +0000 (WET)

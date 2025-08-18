@@ -72,6 +72,8 @@ add_library(cctz
   src/time_zone_fixed.cc
   src/time_zone_fixed.h
   src/time_zone_format.cc
+  src/time_zone_icu_win.cc
+  src/time_zone_icu_win.h
   src/time_zone_if.cc
   src/time_zone_if.h
   src/time_zone_impl.cc
@@ -97,6 +99,9 @@ set_target_properties(cctz PROPERTIES
   )
 if(APPLE)
   target_link_libraries(cctz PUBLIC ${CoreFoundation})
+endif()
+if(WIN32)
+  target_link_libraries(cctz PUBLIC advapi32.lib)
 endif()
 add_library(cctz::cctz ALIAS cctz)
 
