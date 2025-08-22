@@ -56,6 +56,8 @@ cc_library(
         "src/time_zone_lookup.cc",
         "src/time_zone_posix.cc",
         "src/time_zone_posix.h",
+        "src/time_zone_win.cc",
+        "src/time_zone_win.h",
         "src/tzfile.h",
         "src/zone_info_source.cc",
     ],
@@ -67,6 +69,7 @@ cc_library(
     linkopts = select({
         "@platforms//os:osx": ["-Wl,-framework,CoreFoundation"],
         "@platforms//os:ios": ["-Wl,-framework,CoreFoundation"],
+        "@platforms//os:windows": ["advapi32.lib"],
         "//conditions:default": [],
     }),
     visibility = ["//visibility:public"],
