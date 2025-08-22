@@ -325,56 +325,72 @@ UtcToTp(const civil_second& cs) {
 
 class TimeZoneInformationMap {
  public:
-  TimeZoneInformationMap(const REG_TZI_FORMAT& base_info,
-                         const std::vector<USHORT>& year_list,
-                         const std::vector<REG_TZI_FORMAT>& info_list)
+  TimeZoneInformationMap(const REG_TZI_FORMAT& base_info)
       : base_info_(base_info),
-        year_list_(year_list),
-        timezone_list_(info_list) {}
+        info_list_first_year_(0),
+        info_list_last_year_(0) {}
 
-  const REG_TZI_FORMAT& Get(int32_t year) const {
-    if (year_list_.empty()) {
+  TimeZoneInformationMap(const REG_TZI_FORMAT& base_info,
+                         const std::vector<REG_TZI_FORMAT>& info_list,
+                         uint32_t info_list_first_year,
+                         uint32_t info_list_last_year)
+      : base_info_(base_info),
+        timezone_list_(info_list),
+        info_list_first_year_(info_list_first_year),
+        info_list_last_year_(info_list_last_year) {}
+
+  const REG_TZI_FORMAT& Get(year_t year) const {
+    if (timezone_list_.empty()) {
       return base_info_;
     }
-    const USHORT first_year = year_list_.front();
-    if (year <= first_year) {
+    if (year <= info_list_first_year_) {
       // To be consistent with the Windows Time Zone API, use the first entry
       // for years before the first year in the list.
       return timezone_list_[0];
     }
-    const USHORT last_year = year_list_.back();
-    if (last_year < year) {
+    if (info_list_last_year_ < year) {
       return base_info_;
     }
-    return timezone_list_[year - first_year];
+    return timezone_list_[year - info_list_first_year_];
   }
 
  private:
-  REG_TZI_FORMAT base_info_;
-  std::vector<USHORT> year_list_;
-  std::vector<REG_TZI_FORMAT> timezone_list_;
+  const REG_TZI_FORMAT base_info_;
+  const std::vector<REG_TZI_FORMAT> timezone_list_;
+  const uint32_t info_list_first_year_;
+  const uint32_t info_list_last_year_;
 };
+
+using ScopedHKey = std::unique_ptr<std::remove_pointer<HKEY>::type, decltype(&::RegCloseKey)>;
+
+ScopedHKey OpenRegistryKey(HKEY root, const wchar_t* sub_key) {
+  HKEY hkey = nullptr;
+  if (::RegOpenKeyExW(root, sub_key, 0, KEY_READ, &hkey) !=
+      ERROR_SUCCESS) {
+    return ScopedHKey(nullptr, nullptr);
+  }
+  return ScopedHKey(hkey, ::RegCloseKey);
+}
 
 bool GetDynamicTimeZoneInformation(const std::wstring& key_name,
                                    REG_TZI_FORMAT* base_info,
-                                   std::vector<USHORT>* year_list_,
                                    std::vector<REG_TZI_FORMAT>* timezone_list,
+                                   uint32_t* timezone_list_first_year,
+                                   uint32_t* timezone_list_last_year,
                                    DWORD* tz_version) {
   if (key_name.empty() || key_name.size() > 128) {
     return false;
   }
 
-  HKEY hkey_timezone_root = nullptr;
-  if (::RegOpenKeyExW(HKEY_LOCAL_MACHINE, kRegistryPath, 0, KEY_READ,
-                      &hkey_timezone_root) != ERROR_SUCCESS) {
+  ScopedHKey hkey_timezone_root =
+      OpenRegistryKey(HKEY_LOCAL_MACHINE, kRegistryPath);
+  if (!hkey_timezone_root) {
     return false;
   }
-  if (hkey_timezone_root == nullptr) {
-    return false;
-  }
+
   DWORD timezone_version = 0;
   DWORD size = sizeof(timezone_version);
-  if (::RegGetValueW(hkey_timezone_root, nullptr, L"TzVersion",
+  if (::RegGetValueW(hkey_timezone_root.get(), nullptr, L"TzVersion",
                      RRF_RT_REG_DWORD, nullptr,
                      reinterpret_cast<LPBYTE>(&timezone_version),
                      &size) == ERROR_SUCCESS) {
@@ -383,75 +399,62 @@ bool GetDynamicTimeZoneInformation(const std::wstring& key_name,
     }
   }
 
-  HKEY hkey_timezone = nullptr;
-  if (::RegOpenKeyExW(hkey_timezone_root, key_name.c_str(), 0, KEY_READ,
-                      &hkey_timezone) != ERROR_SUCCESS) {
-    return false;
-  }
-  ::RegCloseKey(hkey_timezone_root);
-  if (hkey_timezone == nullptr) {
+  ScopedHKey hkey_timezone =
+      OpenRegistryKey(hkey_timezone_root.get(), key_name.c_str());
+  if (!hkey_timezone) {
     return false;
   }
 
   size = sizeof(REG_TZI_FORMAT);
   LSTATUS reg_result =
-      ::RegGetValueW(hkey_timezone, nullptr, L"TZI", RRF_RT_REG_BINARY, nullptr,
+      ::RegGetValueW(hkey_timezone.get(), nullptr, L"TZI", RRF_RT_REG_BINARY, nullptr,
                      reinterpret_cast<LPBYTE>(base_info), &size);
   if (reg_result != ERROR_SUCCESS || size != sizeof(REG_TZI_FORMAT)) {
-    ::RegCloseKey(hkey_timezone);
     return false;
   }
-  year_list_->clear();
   timezone_list->clear();
 
-  HKEY hkey_dynamic_years = nullptr;
-  reg_result = ::RegOpenKeyExW(hkey_timezone, L"Dynamic DST", 0, KEY_READ,
-                               &hkey_dynamic_years);
-  ::RegCloseKey(hkey_timezone);
-  if (reg_result != ERROR_SUCCESS || hkey_dynamic_years == nullptr) {
+  ScopedHKey hkey_dynamic_years =
+      OpenRegistryKey(hkey_timezone.get(), L"Dynamic DST");
+  if (!hkey_dynamic_years) {
     return true;
   }
 
   DWORD first_year = 0;
-  reg_result = ::RegGetValueW(hkey_dynamic_years, nullptr, L"FirstEntry",
+  reg_result = ::RegGetValueW(hkey_dynamic_years.get(), nullptr, L"FirstEntry",
                               RRF_RT_REG_DWORD, nullptr,
                               reinterpret_cast<LPBYTE>(&first_year), &size);
   if (reg_result != ERROR_SUCCESS) {
-    ::RegCloseKey(hkey_dynamic_years);
     return false;
   }
   DWORD last_year = 0;
-  reg_result = ::RegGetValueW(hkey_dynamic_years, nullptr, L"LastEntry",
+  reg_result = ::RegGetValueW(hkey_dynamic_years.get(), nullptr, L"LastEntry",
                               RRF_RT_REG_DWORD, nullptr,
                               reinterpret_cast<LPBYTE>(&last_year), &size);
   if (reg_result != ERROR_SUCCESS) {
-    ::RegCloseKey(hkey_dynamic_years);
     return false;
   }
   if (first_year > last_year) {
-    ::RegCloseKey(hkey_dynamic_years);
     return false;
   }
+  *timezone_list_first_year = first_year;
+  *timezone_list_last_year = last_year;
 
   const size_t year_count = static_cast<size_t>(last_year - first_year + 1);
-  year_list_->reserve(year_count);
   timezone_list->reserve(year_count);
   for (DWORD year = first_year; year <= last_year; ++year) {
     const std::wstring key = std::to_wstring(year);
     REG_TZI_FORMAT format;
     DWORD size = sizeof(REG_TZI_FORMAT);
-    reg_result = ::RegGetValueW(hkey_dynamic_years, nullptr, key.c_str(),
+    reg_result = ::RegGetValueW(hkey_dynamic_years.get(), nullptr, key.c_str(),
                                 RRF_RT_REG_BINARY, nullptr,
                                 reinterpret_cast<LPBYTE>(&format), &size);
     if (reg_result != ERROR_SUCCESS || size != sizeof(REG_TZI_FORMAT)) {
-      ::RegCloseKey(hkey_dynamic_years);
       return false;
     }
-    year_list_->push_back(static_cast<USHORT>(year));
     timezone_list->push_back(format);
   }
-
-  ::RegCloseKey(hkey_dynamic_years);
+  timezone_list->shrink_to_fit();
   return true;
 }
 
@@ -512,7 +515,7 @@ struct TimeOffsetInfo {
   }
 };
 
-bool ResolveSystemTime(const SYSTEMTIME& system_time, USHORT year,
+bool ResolveSystemTime(const SYSTEMTIME& system_time, year_t year,
                        civil_second* result) {
   if (system_time.wYear == year) {
     *result = civil_second(system_time.wYear, system_time.wMonth,
@@ -528,7 +531,7 @@ bool ResolveSystemTime(const SYSTEMTIME& system_time, USHORT year,
   cctz::civil_day target_day;
   if (system_time.wDay == 5) {
     // wDay == 5 means the last weekday of the month.
-    int32_t tmp_year = year;
+    year_t tmp_year = year;
     int32_t tmp_month = system_time.wMonth + 1;
     if (tmp_month > 12) {
       tmp_month = 1;
@@ -555,7 +558,7 @@ bool ResolveSystemTime(const SYSTEMTIME& system_time, USHORT year,
 }
 
 std::deque<RegistryTimezoneInfo> ParseTimeZoneInfo(const REG_TZI_FORMAT& format,
-                                                   USHORT year) {
+                                                   year_t year) {
   const civil_second year_begin(year, 1, 1, 0, 0, 0);
   bool has_std_begin = false;
   civil_second std_begin;
@@ -607,11 +610,11 @@ std::deque<RegistryTimezoneInfo> ParseTimeZoneInfo(const REG_TZI_FORMAT& format,
 }
 
 std::deque<TimeOffsetInfo> GetOffsetInfo(
-    const TimeZoneInformationMap& timezone_map, USHORT year_start,
-    USHORT year_end) {
+    const TimeZoneInformationMap& timezone_map, year_t year_start,
+    year_t year_end) {
   std::deque<TimeOffsetInfo> result;
   TimeZoneBaseInfo last_base_info;
-  for (USHORT year = year_start - 1; year <= year_end; ++year) {
+  for (year_t year = year_start - 1; year <= year_end; ++year) {
     const auto transitions = ParseTimeZoneInfo(timezone_map.Get(year), year);
     if (year == year_start - 1) {
       last_base_info = transitions.back().to;
@@ -699,10 +702,9 @@ const char* GetCommonAbbreviation(int32_t offset_seconds) {
 class AbbreviationMap {
  public:
   AbbreviationMap(std::vector<int32_t> index_key,
-                  std::vector<size_t> index_value, std::string abbr_buffer)
+                  std::vector<std::string> index_value)
       : index_key_(std::move(index_key)),
-        index_value_(std::move(index_value)),
-        abbr_buffer_(std::move(abbr_buffer)) {}
+        index_value_(std::move(index_value)) {}
 
   const char* GetAbbr(int32_t offset_seconds) const {
     const char* common_abbr = GetCommonAbbreviation(offset_seconds);
@@ -711,7 +713,7 @@ class AbbreviationMap {
     }
     for (size_t i = 0; i < index_key_.size(); ++i) {
       if (index_key_[i] == offset_seconds) {
-        return abbr_buffer_.c_str() + index_value_[i];
+        return index_value_[i].c_str();
       }
     }
     return "";
@@ -719,25 +721,17 @@ class AbbreviationMap {
 
  private:
   const std::vector<int32_t> index_key_;
-  const std::vector<size_t> index_value_;
-  const std::string abbr_buffer_;
+  const std::vector<std::string> index_value_;
 };
 
 class AbbreviationMapSource {
  public:
   AbbreviationMapSource() = default;
-  void Add(int32_t offset_seconds, const std::string& abbr) {
-    index_key_.push_back(offset_seconds);
-    index_value_.push_back(abbr_buffer_.size());
-    abbr_buffer_.append(abbr);
-  }
 
   AbbreviationMap MoveToMap() {
     index_key_.shrink_to_fit();
     index_value_.shrink_to_fit();
-    abbr_buffer_.shrink_to_fit();
-    return AbbreviationMap(std::move(index_key_), std::move(index_value_),
-                           std::move(abbr_buffer_));
+    return AbbreviationMap(std::move(index_key_), std::move(index_value_));
   }
 
   void Add(const REG_TZI_FORMAT& info) {
@@ -761,28 +755,19 @@ class AbbreviationMapSource {
       }
     }
     index_key_.push_back(offset_seconds);
-    if (!abbr_buffer_.empty()) {
-      abbr_buffer_ += '\0';
-    }
-    const size_t index = abbr_buffer_.size();
-    index_value_.push_back(index);
-    abbr_buffer_.append("GMT");
-    abbr_buffer_.append(cctz::FixedOffsetToAbbr(cctz::seconds(offset_seconds)));
+    index_value_.push_back("GMT" + cctz::FixedOffsetToAbbr(cctz::seconds(offset_seconds)));
   }
   std::vector<int32_t> index_key_;
-  std::vector<size_t> index_value_;
-  std::string abbr_buffer_;
+  std::vector<std::string> index_value_;
 };
 
 class TimeZoneIcuWin final : public TimeZoneIf {
  public:
-  TimeZoneIcuWin(const REG_TZI_FORMAT& base_info,
-                 const std::vector<USHORT>& year_list,
-                 const std::vector<REG_TZI_FORMAT>& info_list,
+  TimeZoneIcuWin(const TimeZoneInformationMap& timezone_map,
                  AbbreviationMap abbr_map,
                  std::deque<TimeOffsetInfo> transitions, bool starts_with_fixed,
                  bool ends_with_fixed)
-      : timezone_map_(base_info, year_list, info_list),
+      : timezone_map_(timezone_map),
         transitions_(std::move(transitions)),
         abbr_map_(std::move(abbr_map)),
         starts_with_fixed_(starts_with_fixed),
@@ -800,7 +785,7 @@ class TimeZoneIcuWin final : public TimeZoneIf {
         (starts_with_fixed_ && tp < transitions_.front().tp) ||
         (ends_with_fixed_ && transitions_.back().tp < tp);
     const auto utc = TpToUtc(tp);
-    const USHORT utc_year = static_cast<USHORT>(utc.year());
+    const year_t utc_year = utc.year();
     const std::deque<TimeOffsetInfo>& offsets =
         cached ? transitions_
                : GetOffsetInfo(timezone_map_, utc_year - 1, utc_year + 1);
@@ -839,7 +824,7 @@ class TimeZoneIcuWin final : public TimeZoneIf {
         (starts_with_fixed_ && cs < transitions_.front().earlier_cs()) ||
         (ends_with_fixed_ && transitions_.back().later_cs() < cs);
 
-    const USHORT year = static_cast<USHORT>(cs.year());
+    const year_t year = cs.year();
     const auto& offsets =
         cached ? transitions_
                : GetOffsetInfo(timezone_map_, year - 1, year + 1);
@@ -997,14 +982,16 @@ std::unique_ptr<TimeZoneIf> Create(const std::string& name) {
   }
 
   REG_TZI_FORMAT base_info;
-  std::vector<USHORT> year_list;
   std::vector<REG_TZI_FORMAT> info_list;
+  uint32_t year_list_first_year = 0;
+  uint32_t year_list_last_year = 0;
   DWORD tz_version = 0;
-  if (!GetDynamicTimeZoneInformation(win_timezone_name, &base_info, &year_list,
-                                     &info_list, &tz_version)) {
+  if (!GetDynamicTimeZoneInformation(win_timezone_name, &base_info, &info_list,
+                                     &year_list_first_year,
+                                     &year_list_last_year, &tz_version)) {
     return nullptr;
   }
-  if (year_list.empty() && base_info.DaylightDate.wMonth == 0 &&
+  if (info_list.empty() && base_info.DaylightDate.wMonth == 0 &&
       base_info.StandardDate.wMonth == 0) {
     const int32_t offset_seconds =
         -(base_info.Bias + base_info.StandardBias) * 60;
@@ -1017,31 +1004,35 @@ std::unique_ptr<TimeZoneIf> Create(const std::string& name) {
 
   const auto utc_now = civil_second(1970, 1, 1) + std::time(nullptr);
 
-  const TimeZoneInformationMap map(base_info, year_list, info_list);
-  const USHORT utc_year = static_cast<USHORT>(utc_now.year());
-  USHORT first_year = utc_year - 16;
-  USHORT last_year = utc_year + 16;
+  const year_t utc_year = utc_now.year();
+  year_t first_year = utc_year - 16;
+  year_t last_year = utc_year + 16;
   bool starts_with_fixed = false;
   bool ends_with_fixed = false;
 
-  if (!year_list.empty()) {
+  if (!info_list.empty()) {
     const auto& first_year_info = info_list.front();
     starts_with_fixed = (first_year_info.StandardDate.wMonth == 0 &&
                          first_year_info.DaylightDate.wMonth == 0);
     ends_with_fixed = (info_list.back().StandardDate.wMonth == 0 &&
                        info_list.back().DaylightDate.wMonth == 0);
     if (starts_with_fixed) {
-      first_year = year_list.front();
+      first_year = year_list_first_year;
     } else {
-      first_year = std::min<USHORT>(year_list.front() - 3, first_year);
+      first_year = std::min<year_t>(year_list_first_year - 3, first_year);
     }
     if (ends_with_fixed) {
-      last_year = year_list.back() + 1;
+      last_year = year_list_last_year + 1;
     } else {
-      last_year = std::max<USHORT>(year_list.back() + 3, last_year);
+      last_year = std::max<year_t>(year_list_last_year + 3, last_year);
     }
   }
 
+  const TimeZoneInformationMap& map =
+      info_list.empty()
+          ? TimeZoneInformationMap(base_info)
+          : TimeZoneInformationMap(base_info, info_list, year_list_first_year,
+                                   year_list_last_year);
   auto transitions = GetOffsetInfo(map, first_year, last_year);
 
   AbbreviationMapSource abbr_source;
@@ -1050,7 +1041,7 @@ std::unique_ptr<TimeZoneIf> Create(const std::string& name) {
     abbr_source.Add(info);
   }
   return std::unique_ptr<TimeZoneIcuWin>(new TimeZoneIcuWin(
-      base_info, year_list, info_list, std::move(abbr_source.MoveToMap()),
+      map, std::move(abbr_source.MoveToMap()),
       std::move(transitions), starts_with_fixed, ends_with_fixed));
 }
 
