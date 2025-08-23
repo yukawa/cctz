@@ -256,6 +256,9 @@ std::string Utf16ToUtf8(const wchar_t* ptr, size_t size) {
 const wchar_t kRegistryPath[] =
     L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Time Zones";
 
+// The raw structure stored in the "TZI" value of the Windows registry.
+// https://learn.microsoft.com/en-us/windows/win32/api/timezoneapi/ns-timezoneapi-time_zone_information#remarks
+#pragma pack(push, 4)
 struct REG_TZI_FORMAT {
   LONG Bias;
   LONG StandardBias;
@@ -263,9 +266,32 @@ struct REG_TZI_FORMAT {
   SYSTEMTIME StandardDate;
   SYSTEMTIME DaylightDate;
 };
+#pragma pack(pop)
+
+const REG_TZI_FORMAT kEmptyTziFormat = {};
+static_assert(std::is_trivially_constructible<REG_TZI_FORMAT>::value,
+              "REG_TZI_FORMAT must be trivially constructible");
+
+struct RawOffsetInfo {
+  RawOffsetInfo() : offset_seconds(0), dst(false) {}
+  int32_t offset_seconds;
+  bool dst;
+};
+
+// Transitions extracted from REG_TZI_FORMAT for the target year. Each
+// REG_TZI_FORMAT can provide up to three transitions in a year.
+// The most tricky part is that REG_TZI_FORMAT gives us "from" local time and
+// "to" offset info. This means that "from" local time cannot be converted to
+// UTC time without knowing the "from" offset.
+// See ResolveSystemTime() on how REG_TZI_FORMAT is interpreted.
+struct RawTransitionInfo {
+  RawTransitionInfo() {}
+  civil_second from_civil_time;
+  RawOffsetInfo to;
+};
 
 CONSTEXPR_F
-bool IsValidSystemTime(const SYSTEMTIME& st) {
+bool IsValidSystemTime(SYSTEMTIME st) {
   if (st.wYear == 0) {
     if (st.wMonth == 0) {
       return st.wDay == 0 && st.wDayOfWeek == 0 && st.wHour == 0 &&
@@ -289,6 +315,120 @@ bool IsValidSystemTime(const SYSTEMTIME& st) {
          st.wHour < 24 && 0 <= st.wMinute && st.wMinute < 60 &&
          0 <= st.wSecond && st.wSecond < 60 && 0 <= st.wMilliseconds &&
          st.wMilliseconds < 1000;
+}
+
+const cctz::weekday kWeekdays[] = {
+    cctz::weekday::sunday,    cctz::weekday::monday,   cctz::weekday::tuesday,
+    cctz::weekday::wednesday, cctz::weekday::thursday, cctz::weekday::friday,
+    cctz::weekday::saturday};
+
+bool ResolveSystemTime(SYSTEMTIME system_time, year_t year,
+                       civil_second* result) {
+  if (system_time.wYear == year) {
+    *result = civil_second(system_time.wYear, system_time.wMonth,
+                           system_time.wDay, system_time.wHour,
+                           system_time.wMinute, system_time.wSecond);
+    return true;
+  }
+  if (system_time.wYear != 0) {
+    return false;
+  }
+
+  // Assume IsValidSystemTime() has already validated system_time.wDayOfWeek to
+  // be in [0, 6].
+  const cctz::weekday target_weekday = kWeekdays[system_time.wDayOfWeek];
+  cctz::civil_day target_day;
+  if (system_time.wDay == 5) {
+    // wDay == 5 means the last weekday of the month.
+    year_t tmp_year = year;
+    int32_t tmp_month = system_time.wMonth + 1;
+    if (tmp_month > 12) {
+      tmp_month = 1;
+      tmp_year += 1;
+    }
+    target_day =
+        prev_weekday(cctz::civil_day(tmp_year, tmp_month, 1), target_weekday);
+  } else {
+    // Calcurate the first target weekday of the month.
+    target_day = next_weekday(cctz::civil_day(year, system_time.wMonth, 1) - 1,
+                              target_weekday);
+    // Adjust the week number based on the wDay field.
+    target_day += (system_time.wDay - 1) * 7;
+  }
+
+  civil_second cs(target_day.year(), target_day.month(), target_day.day(),
+                  system_time.wHour, system_time.wMinute, system_time.wSecond);
+  // Special rule for "23:59:59.999".
+  // https://stackoverflow.com/a/47106207
+  if (cs.hour() == 23 && cs.minute() == 59 && cs.second() == 59 &&
+      system_time.wMilliseconds == 999) {
+    cs += 1;
+  }
+  *result = cs;
+  return true;
+}
+
+std::deque<RawTransitionInfo> ParseTimeZoneInfo(const REG_TZI_FORMAT& format,
+                                                year_t year) {
+  const civil_second year_begin(year, 1, 1, 0, 0, 0);
+  bool has_std_begin = false;
+  civil_second std_begin;
+  if (format.StandardDate.wMonth != 0) {
+    has_std_begin = ResolveSystemTime(format.StandardDate, year, &std_begin);
+  }
+  bool has_dst_begin = false;
+  civil_second dst_begin;
+  if (format.DaylightDate.wMonth != 0) {
+    has_dst_begin = ResolveSystemTime(format.DaylightDate, year, &dst_begin);
+  }
+
+  std::deque<RawTransitionInfo> result;
+  if (!(has_std_begin && std_begin == year_begin) &&
+      !(has_dst_begin && dst_begin == year_begin)) {
+    RawTransitionInfo info;
+    info.from_civil_time = year_begin;
+    info.to.offset_seconds = -60 * format.Bias;
+    info.to.dst = false;
+    result.push_back(info);
+  }
+  if (has_std_begin) {
+    RawTransitionInfo info;
+    info.from_civil_time = std_begin;
+    info.to.offset_seconds = -60 * (format.Bias + format.StandardBias);
+    info.to.dst = false;
+    result.push_back(info);
+  }
+  if (has_dst_begin) {
+    RawTransitionInfo info;
+    info.from_civil_time = dst_begin;
+    info.to.offset_seconds = -60 * (format.Bias + format.DaylightBias);
+    info.to.dst = true;
+    if (has_std_begin) {
+      if (dst_begin < std_begin) {
+        result.insert(result.end() - 1, info);
+      } else if (dst_begin == std_begin) {
+        result.pop_back();
+        result.push_back(info);
+      } else {
+        result.push_back(info);
+      }
+    } else {
+      result.push_back(info);
+    }
+  }
+
+  return result;
+}
+
+using ScopedHKey =
+    std::unique_ptr<std::remove_pointer<HKEY>::type, decltype(&::RegCloseKey)>;
+
+ScopedHKey OpenRegistryKey(HKEY root, const wchar_t* sub_key) {
+  HKEY hkey = nullptr;
+  if (::RegOpenKeyExW(root, sub_key, 0, KEY_READ, &hkey) != ERROR_SUCCESS) {
+    return ScopedHKey(nullptr, nullptr);
+  }
+  return ScopedHKey(hkey, ::RegCloseKey);
 }
 
 bool ReadTimeZoneInfo(HKEY key, const wchar_t* value_name,
@@ -331,376 +471,6 @@ bool ReadDword(HKEY key, const wchar_t* value_name, DWORD* value) {
   return true;
 }
 
-CONSTEXPR_F
-cctz::weekday FromSystemTimeDayOfWeek(const SYSTEMTIME& system_time) {
-  switch (system_time.wDayOfWeek) {
-    default:
-    case 0:
-      return cctz::weekday::sunday;
-    case 1:
-      return cctz::weekday::monday;
-    case 2:
-      return cctz::weekday::tuesday;
-    case 3:
-      return cctz::weekday::wednesday;
-    case 4:
-      return cctz::weekday::thursday;
-    case 5:
-      return cctz::weekday::friday;
-    case 6:
-      return cctz::weekday::saturday;
-  }
-}
-
-CONSTEXPR_CHRONO_F
-civil_second TpToUtc(const time_point<seconds>& tp) {
-  return civil_second(1970, 1, 1, 0, 0, 0) +
-         (tp - std::chrono::time_point_cast<seconds>(
-                   std::chrono::system_clock::from_time_t(0)))
-             .count();
-}
-
-CONSTEXPR_CHRONO_F
-time_point<seconds> UtcToTp(const civil_second& cs) {
-  return std::chrono::time_point_cast<seconds>(
-             std::chrono::system_clock::from_time_t(0)) +
-         seconds(cs - civil_second(1970, 1, 1, 0, 0, 0));
-}
-
-class TimeZoneInformationMap {
- public:
-  TimeZoneInformationMap(const REG_TZI_FORMAT& base_info)
-      : base_info_(base_info),
-        info_list_first_year_(0),
-        info_list_last_year_(0) {}
-
-  TimeZoneInformationMap(const REG_TZI_FORMAT& base_info,
-                         const std::vector<REG_TZI_FORMAT>& info_list,
-                         uint32_t info_list_first_year,
-                         uint32_t info_list_last_year)
-      : base_info_(base_info),
-        timezone_list_(info_list),
-        info_list_first_year_(info_list_first_year),
-        info_list_last_year_(info_list_last_year) {}
-
-  const REG_TZI_FORMAT& Get(year_t year) const {
-    if (timezone_list_.empty()) {
-      return base_info_;
-    }
-    if (year <= info_list_first_year_) {
-      // To be consistent with the Windows Time Zone API, use the first entry
-      // for years before the first year in the list.
-      return timezone_list_[0];
-    }
-    if (info_list_last_year_ < year) {
-      return base_info_;
-    }
-    return timezone_list_[year - info_list_first_year_];
-  }
-
- private:
-  const REG_TZI_FORMAT base_info_;
-  const std::vector<REG_TZI_FORMAT> timezone_list_;
-  const uint32_t info_list_first_year_;
-  const uint32_t info_list_last_year_;
-};
-
-using ScopedHKey =
-    std::unique_ptr<std::remove_pointer<HKEY>::type, decltype(&::RegCloseKey)>;
-
-ScopedHKey OpenRegistryKey(HKEY root, const wchar_t* sub_key) {
-  HKEY hkey = nullptr;
-  if (::RegOpenKeyExW(root, sub_key, 0, KEY_READ, &hkey) != ERROR_SUCCESS) {
-    return ScopedHKey(nullptr, nullptr);
-  }
-  return ScopedHKey(hkey, ::RegCloseKey);
-}
-
-bool LoadDynamicTimeZoneInformation(const std::wstring& key_name,
-                                    REG_TZI_FORMAT* base_info,
-                                    std::vector<REG_TZI_FORMAT>* timezone_list,
-                                    uint32_t* timezone_list_first_year,
-                                    uint32_t* timezone_list_last_year,
-                                    DWORD* tz_version) {
-  if (key_name.empty() || key_name.size() > 128) {
-    return false;
-  }
-
-  ScopedHKey hkey_timezone_root =
-      OpenRegistryKey(HKEY_LOCAL_MACHINE, kRegistryPath);
-  if (!hkey_timezone_root) {
-    return false;
-  }
-
-  DWORD timezone_version = 0;
-  if (!ReadDword(hkey_timezone_root.get(), L"TzVersion", &timezone_version)) {
-    return false;
-  }
-
-  ScopedHKey hkey_timezone =
-      OpenRegistryKey(hkey_timezone_root.get(), key_name.c_str());
-  if (!hkey_timezone) {
-    return false;
-  }
-  if (!ReadTimeZoneInfo(hkey_timezone.get(), L"TZI", base_info)) {
-    return false;
-  }
-  timezone_list->clear();
-
-  ScopedHKey hkey_dynamic_years =
-      OpenRegistryKey(hkey_timezone.get(), L"Dynamic DST");
-  if (!hkey_dynamic_years) {
-    return true;
-  }
-
-  DWORD first_year = 0;
-  if (!ReadDword(hkey_dynamic_years.get(), L"FirstEntry", &first_year)) {
-    return false;
-  }
-  DWORD last_year = 0;
-  if (!ReadDword(hkey_dynamic_years.get(), L"LastEntry", &last_year)) {
-    return false;
-  }
-  if (first_year > last_year) {
-    return false;
-  }
-  *timezone_list_first_year = first_year;
-  *timezone_list_last_year = last_year;
-
-  const size_t year_count =
-      static_cast<size_t>(static_cast<int64_t>(last_year) - first_year + 1);
-  timezone_list->reserve(year_count);
-  for (DWORD year = first_year; year <= last_year; ++year) {
-    const std::wstring key = std::to_wstring(year);
-    REG_TZI_FORMAT format;
-    if (!ReadTimeZoneInfo(hkey_dynamic_years.get(), key.c_str(), &format)) {
-      return false;
-    }
-    timezone_list->push_back(format);
-  }
-  timezone_list->shrink_to_fit();
-  return true;
-}
-
-std::wstring GetWindowsTimeZoneName(const IcuFunctions& icu,
-                                    const std::wstring& iana_name) {
-  if (iana_name.size() > std::numeric_limits<int32_t>::max()) {
-    return std::wstring();
-  }
-  const int32_t iana_name_length = static_cast<int32_t>(iana_name.size());
-
-  const int32_t buffer_size = 128;
-  UChar buffer[buffer_size];
-  UErrorCode status = U_ZERO_ERROR;
-  const int32_t length = icu.ucal_getWindowsTimeZoneID(
-      iana_name.c_str(), iana_name_length, buffer, buffer_size, &status);
-  if (U_FAILURE(status) && length <= 0) {
-    return std::wstring();
-  }
-  return std::wstring(buffer, length);
-}
-
-struct TimeZoneBaseInfo {
-  TimeZoneBaseInfo() : offset_seconds(0), dst(false) {}
-  int32_t offset_seconds;
-  bool dst;
-};
-
-struct RegistryTimezoneInfo {
-  RegistryTimezoneInfo() {}
-  civil_second from_civil_time;
-  TimeZoneBaseInfo to;
-};
-
-struct LocalTimeInfo {
-  LocalTimeInfo() : offset_seconds(0), is_dst(false) {}
-  civil_second civil_time;
-  int32_t offset_seconds;
-  bool is_dst;
-};
-
-struct TimeOffsetInfo {
-  TimeOffsetInfo() : kind(time_zone::civil_lookup::UNIQUE) {}
-
-  LocalTimeInfo from;
-  LocalTimeInfo to;
-  time_point<seconds> tp;
-  time_zone::civil_lookup::civil_kind kind;
-
-  const civil_second& earlier_cs() const {
-    // Equivalent to std::min(from.civil_time, to.civil_time)
-    return kind == time_zone::civil_lookup::REPEATED ? to.civil_time
-                                                     : from.civil_time;
-  }
-  const civil_second& later_cs() const {
-    // Equivalent to std::max(from.civil_time, to.civil_time)
-    return kind == time_zone::civil_lookup::REPEATED ? from.civil_time
-                                                     : to.civil_time;
-  }
-};
-
-bool ResolveSystemTime(const SYSTEMTIME& system_time, year_t year,
-                       civil_second* result) {
-  if (system_time.wYear == year) {
-    *result = civil_second(system_time.wYear, system_time.wMonth,
-                           system_time.wDay, system_time.wHour,
-                           system_time.wMinute, system_time.wSecond);
-    return true;
-  }
-  if (system_time.wYear != 0) {
-    return false;
-  }
-
-  const cctz::weekday target_weekday = FromSystemTimeDayOfWeek(system_time);
-  cctz::civil_day target_day;
-  if (system_time.wDay == 5) {
-    // wDay == 5 means the last weekday of the month.
-    year_t tmp_year = year;
-    int32_t tmp_month = system_time.wMonth + 1;
-    if (tmp_month > 12) {
-      tmp_month = 1;
-      tmp_year += 1;
-    }
-    target_day =
-        prev_weekday(cctz::civil_day(tmp_year, tmp_month, 1), target_weekday);
-  } else {
-    // Calcurate the first target weekday of the month.
-    target_day = next_weekday(cctz::civil_day(year, system_time.wMonth, 1) - 1,
-                              target_weekday);
-    // Adjust the week number based on the wDay field.
-    target_day += (system_time.wDay - 1) * 7;
-  }
-
-  civil_second cs(target_day.year(), target_day.month(), target_day.day(),
-                  system_time.wHour, system_time.wMinute, system_time.wSecond);
-  // Special rule for "23:59:59.999".
-  // https://stackoverflow.com/a/47106207
-  if (cs.hour() == 23 && cs.minute() == 59 && cs.second() == 59 &&
-      system_time.wMilliseconds == 999) {
-    cs += 1;
-  }
-  *result = cs;
-  return true;
-}
-
-std::deque<RegistryTimezoneInfo> ParseTimeZoneInfo(const REG_TZI_FORMAT& format,
-                                                   year_t year) {
-  const civil_second year_begin(year, 1, 1, 0, 0, 0);
-  bool has_std_begin = false;
-  civil_second std_begin;
-  if (format.StandardDate.wMonth != 0) {
-    has_std_begin = ResolveSystemTime(format.StandardDate, year, &std_begin);
-  }
-  bool has_dst_begin = false;
-  civil_second dst_begin;
-  if (format.DaylightDate.wMonth != 0) {
-    has_dst_begin = ResolveSystemTime(format.DaylightDate, year, &dst_begin);
-  }
-
-  std::deque<RegistryTimezoneInfo> result;
-  if (!(has_std_begin && std_begin == year_begin) &&
-      !(has_dst_begin && dst_begin == year_begin)) {
-    RegistryTimezoneInfo info;
-    info.from_civil_time = year_begin;
-    info.to.offset_seconds = -60 * format.Bias;
-    info.to.dst = false;
-    result.push_back(info);
-  }
-  if (has_std_begin) {
-    RegistryTimezoneInfo info;
-    info.from_civil_time = std_begin;
-    info.to.offset_seconds = -60 * (format.Bias + format.StandardBias);
-    info.to.dst = false;
-    result.push_back(info);
-  }
-  if (has_dst_begin) {
-    RegistryTimezoneInfo info;
-    info.from_civil_time = dst_begin;
-    info.to.offset_seconds = -60 * (format.Bias + format.DaylightBias);
-    info.to.dst = true;
-    if (has_std_begin) {
-      if (dst_begin < std_begin) {
-        result.insert(result.end() - 1, info);
-      } else if (dst_begin == std_begin) {
-        result.pop_back();
-        result.push_back(info);
-      } else {
-        result.push_back(info);
-      }
-    } else {
-      result.push_back(info);
-    }
-  }
-
-  return result;
-}
-
-std::deque<TimeOffsetInfo> GetOffsetInfo(
-    const TimeZoneInformationMap& timezone_map, year_t year_start,
-    year_t year_end) {
-  std::deque<TimeOffsetInfo> result;
-  TimeZoneBaseInfo last_base_info;
-  for (year_t year = year_start - 1; year <= year_end; ++year) {
-    const auto transitions = ParseTimeZoneInfo(timezone_map.Get(year), year);
-    if (year == year_start - 1) {
-      last_base_info = transitions.back().to;
-      continue;
-    }
-    for (const auto& transition : transitions) {
-      TimeOffsetInfo info;
-      info.from.civil_time = transition.from_civil_time;
-      info.from.offset_seconds = last_base_info.offset_seconds;
-      info.from.is_dst = last_base_info.dst;
-      info.tp =
-          UtcToTp(transition.from_civil_time - last_base_info.offset_seconds);
-      info.to.offset_seconds = transition.to.offset_seconds;
-      info.to.is_dst = transition.to.dst;
-      const int32_t offset_diff =
-          transition.to.offset_seconds - last_base_info.offset_seconds;
-      info.to.civil_time = info.from.civil_time + offset_diff;
-      if (offset_diff > 0) {
-        info.kind = time_zone::civil_lookup::SKIPPED;
-      } else if (offset_diff == 0) {
-        if (!result.empty()) {
-          const auto& last_info = result.back();
-          if (last_info.to.offset_seconds == info.from.offset_seconds &&
-              last_info.to.is_dst == info.from.is_dst) {
-            // Redundant entry.
-            continue;
-          }
-        }
-        info.kind = time_zone::civil_lookup::UNIQUE;
-      } else {
-        info.kind = time_zone::civil_lookup::REPEATED;
-      }
-      if (!result.empty()) {
-        const auto& last_info = result.back();
-        if (last_info.kind == info.kind &&
-            last_info.from.civil_time == info.from.civil_time &&
-            last_info.from.offset_seconds == info.from.offset_seconds &&
-            last_info.from.is_dst == info.from.is_dst &&
-            last_info.to.civil_time == info.to.civil_time &&
-            last_info.to.offset_seconds == info.to.offset_seconds &&
-            last_info.to.is_dst == info.to.is_dst && last_info.tp == info.tp) {
-          // Redundant entry.
-          continue;
-        }
-      }
-      result.push_back(info);
-      last_base_info = transition.to;
-    }
-  }
-  // Remove redundant UNIQUE entries at the beginning.
-  while (!result.empty()) {
-    const auto& front = result.front();
-    if (front.kind != time_zone::civil_lookup::UNIQUE) {
-      break;
-    }
-    result.pop_front();
-  }
-  return result;
-}
-
 const char* kCommonAbbrs[] = {
     "GMT-14", "GMT-13:30", "GMT-13", "GMT-12:30", "GMT-12", "GMT-11:30",
     "GMT-11", "GMT-10:30", "GMT-10", "GMT-09:30", "GMT-09", "GMT-08:30",
@@ -727,12 +497,13 @@ const char* GetCommonAbbreviation(int32_t offset_seconds) {
 
 class AbbreviationMap {
  public:
+  AbbreviationMap() = default;
   AbbreviationMap(std::vector<int32_t> index_key,
                   std::vector<std::string> index_value)
       : index_key_(std::move(index_key)),
         index_value_(std::move(index_value)) {}
 
-  const char* GetAbbr(int32_t offset_seconds) const {
+  const char* Get(int32_t offset_seconds) const {
     const char* common_abbr = GetCommonAbbreviation(offset_seconds);
     if (common_abbr != nullptr) {
       return common_abbr;
@@ -798,6 +569,280 @@ class AbbreviationMapBuilder {
   std::vector<int32_t> extra_offsets_;
 };
 
+class TimeZoneRegistry {
+ public:
+  TimeZoneRegistry(std::vector<REG_TZI_FORMAT> info_list,
+                   uint32_t info_list_first_year, uint32_t info_list_last_year,
+                   uint32_t tz_version, AbbreviationMap abbr_map)
+      : timezone_list_(std::move(info_list)),
+        info_list_first_year_(info_list_first_year),
+        info_list_last_year_(info_list_last_year),
+        tz_version_(tz_version),
+        abbr_map_(std::move(abbr_map)),
+        is_valid_(true) {}
+
+  static TimeZoneRegistry Invalid() { return TimeZoneRegistry(); }
+
+  const REG_TZI_FORMAT& Get(year_t year) const {
+    if (timezone_list_.empty()) {
+      return kEmptyTziFormat;
+    }
+    if (year <= info_list_first_year_) {
+      // To be consistent with the Windows Time Zone API, use the first entry
+      // for years before the first year in the list.
+      return timezone_list_[0];
+    }
+    if (info_list_last_year_ < year) {
+      return timezone_list_.back();
+    }
+    return timezone_list_[year - info_list_first_year_];
+  }
+  const REG_TZI_FORMAT& GetBaseInfo() const {
+    if (timezone_list_.empty()) {
+      return kEmptyTziFormat;
+    }
+    return timezone_list_.back();
+  }
+
+  const uint32_t GetFirstYear() const { return info_list_first_year_; }
+  const uint32_t GetLastYear() const { return info_list_last_year_; }
+  const std::string GetVersionString() const {
+    return std::to_string(tz_version_);
+  }
+  const bool IsAvailable() const { return is_valid_; }
+  const bool IsYearDependent() const { return timezone_list_.size() > 1; }
+  const bool IsFixed() const {
+    if (!is_valid_ || IsYearDependent()) {
+      return false;
+    }
+    const REG_TZI_FORMAT& base = GetBaseInfo();
+    return base.StandardDate.wMonth == 0 && base.DaylightDate.wMonth == 0;
+  }
+  const bool StartsWithFixed() const {
+    if (!is_valid_) {
+      return false;
+    }
+    const REG_TZI_FORMAT& front = timezone_list_.front();
+    return front.StandardDate.wMonth == 0 && front.DaylightDate.wMonth == 0;
+  }
+  const bool EndsWithFixed() const {
+    if (!is_valid_) {
+      return false;
+    }
+    const REG_TZI_FORMAT& back = timezone_list_.back();
+    return back.StandardDate.wMonth == 0 && back.DaylightDate.wMonth == 0;
+  }
+  const char* GetAbbreviation(int32_t offset_seconds) const {
+    return abbr_map_.Get(offset_seconds);
+  }
+
+ private:
+  TimeZoneRegistry()
+      : timezone_list_({REG_TZI_FORMAT()}),
+        info_list_first_year_(0),
+        info_list_last_year_(0),
+        tz_version_(0),
+        is_valid_(false) {}
+
+  const std::vector<REG_TZI_FORMAT> timezone_list_;
+  const uint32_t info_list_first_year_;
+  const uint32_t info_list_last_year_;
+  const uint32_t tz_version_;
+  const AbbreviationMap abbr_map_;
+  const bool is_valid_;
+};
+
+TimeZoneRegistry LoadTimeZoneFromRegistry(const std::wstring& key_name) {
+  if (key_name.empty() || key_name.size() > 128) {
+    return TimeZoneRegistry::Invalid();
+  }
+
+  ScopedHKey hkey_timezone_root =
+      OpenRegistryKey(HKEY_LOCAL_MACHINE, kRegistryPath);
+  if (!hkey_timezone_root) {
+    return TimeZoneRegistry::Invalid();
+  }
+
+  DWORD timezone_version = 0;
+  if (!ReadDword(hkey_timezone_root.get(), L"TzVersion", &timezone_version)) {
+    return TimeZoneRegistry::Invalid();
+  }
+
+  ScopedHKey hkey_timezone =
+      OpenRegistryKey(hkey_timezone_root.get(), key_name.c_str());
+  if (!hkey_timezone) {
+    return TimeZoneRegistry::Invalid();
+  }
+  std::vector<REG_TZI_FORMAT> timezone_list;
+  DWORD first_year = 0;
+  DWORD last_year = 0;
+
+  ScopedHKey hkey_dynamic_years =
+      OpenRegistryKey(hkey_timezone.get(), L"Dynamic DST");
+  if (hkey_dynamic_years) {
+    if (!ReadDword(hkey_dynamic_years.get(), L"FirstEntry", &first_year)) {
+      return TimeZoneRegistry::Invalid();
+    }
+    if (!ReadDword(hkey_dynamic_years.get(), L"LastEntry", &last_year)) {
+      return TimeZoneRegistry::Invalid();
+    }
+    if (first_year > last_year) {
+      return TimeZoneRegistry::Invalid();
+    }
+
+    const size_t year_count =
+        static_cast<size_t>(static_cast<int64_t>(last_year) - first_year + 1);
+    timezone_list.reserve(year_count);
+    for (DWORD year = first_year; year <= last_year; ++year) {
+      const std::wstring key = std::to_wstring(year);
+      REG_TZI_FORMAT format;
+      if (!ReadTimeZoneInfo(hkey_dynamic_years.get(), key.c_str(), &format)) {
+        return TimeZoneRegistry::Invalid();
+      }
+      timezone_list.push_back(format);
+    }
+  }
+  REG_TZI_FORMAT base_tzi;
+  if (!ReadTimeZoneInfo(hkey_timezone.get(), L"TZI", &base_tzi)) {
+    return TimeZoneRegistry::Invalid();
+  }
+  timezone_list.push_back(base_tzi);
+  timezone_list.shrink_to_fit();
+
+  AbbreviationMapBuilder abbr_map_builder;
+  for (const auto& info : timezone_list) {
+    abbr_map_builder.Add(info);
+  }
+
+  return TimeZoneRegistry(std::move(timezone_list), first_year, last_year,
+                          timezone_version, abbr_map_builder.Build());
+}
+
+std::wstring GetWindowsTimeZoneName(const IcuFunctions& icu,
+                                    const std::wstring& iana_name) {
+  if (iana_name.size() > std::numeric_limits<int32_t>::max()) {
+    return std::wstring();
+  }
+  const int32_t iana_name_length = static_cast<int32_t>(iana_name.size());
+
+  const int32_t buffer_size = 128;
+  UChar buffer[buffer_size];
+  UErrorCode status = U_ZERO_ERROR;
+  const int32_t length = icu.ucal_getWindowsTimeZoneID(
+      iana_name.c_str(), iana_name_length, buffer, buffer_size, &status);
+  if (U_FAILURE(status) && length <= 0) {
+    return std::wstring();
+  }
+  return std::wstring(buffer, length);
+}
+
+CONSTEXPR_CHRONO_F
+civil_second TpToUtc(const time_point<seconds>& tp) {
+  return civil_second(1970, 1, 1, 0, 0, 0) +
+         (tp - std::chrono::time_point_cast<seconds>(
+                   std::chrono::system_clock::from_time_t(0)))
+             .count();
+}
+
+CONSTEXPR_CHRONO_F
+time_point<seconds> UtcToTp(const civil_second& cs) {
+  return std::chrono::time_point_cast<seconds>(
+             std::chrono::system_clock::from_time_t(0)) +
+         seconds(cs - civil_second(1970, 1, 1, 0, 0, 0));
+}
+
+struct LocalTimeInfo {
+  LocalTimeInfo() : offset_seconds(0), is_dst(false) {}
+  civil_second civil_time;
+  int32_t offset_seconds;
+  bool is_dst;
+};
+
+struct TimeOffsetInfo {
+  TimeOffsetInfo() : kind(time_zone::civil_lookup::UNIQUE) {}
+
+  LocalTimeInfo from;
+  LocalTimeInfo to;
+  time_point<seconds> tp;
+  time_zone::civil_lookup::civil_kind kind;
+
+  const civil_second& earlier_cs() const {
+    // Equivalent to std::min(from.civil_time, to.civil_time)
+    return kind == time_zone::civil_lookup::REPEATED ? to.civil_time
+                                                     : from.civil_time;
+  }
+  const civil_second& later_cs() const {
+    // Equivalent to std::max(from.civil_time, to.civil_time)
+    return kind == time_zone::civil_lookup::REPEATED ? from.civil_time
+                                                     : to.civil_time;
+  }
+};
+
+std::deque<TimeOffsetInfo> GetOffsetInfo(const TimeZoneRegistry& timezone_map,
+                                         year_t year_start, year_t year_end) {
+  std::deque<TimeOffsetInfo> result;
+  RawOffsetInfo last_base_info;
+  for (year_t year = year_start - 1; year <= year_end; ++year) {
+    const auto transitions = ParseTimeZoneInfo(timezone_map.Get(year), year);
+    if (year == year_start - 1) {
+      last_base_info = transitions.back().to;
+      continue;
+    }
+    for (const auto& transition : transitions) {
+      TimeOffsetInfo info;
+      info.from.civil_time = transition.from_civil_time;
+      info.from.offset_seconds = last_base_info.offset_seconds;
+      info.from.is_dst = last_base_info.dst;
+      info.tp =
+          UtcToTp(transition.from_civil_time - last_base_info.offset_seconds);
+      info.to.offset_seconds = transition.to.offset_seconds;
+      info.to.is_dst = transition.to.dst;
+      const int32_t offset_diff =
+          transition.to.offset_seconds - last_base_info.offset_seconds;
+      info.to.civil_time = info.from.civil_time + offset_diff;
+      if (offset_diff > 0) {
+        info.kind = time_zone::civil_lookup::SKIPPED;
+      } else if (offset_diff == 0) {
+        if (!result.empty()) {
+          const auto& last_info = result.back();
+          if (last_info.to.offset_seconds == info.from.offset_seconds &&
+              last_info.to.is_dst == info.from.is_dst) {
+            // Redundant entry.
+            continue;
+          }
+        }
+        info.kind = time_zone::civil_lookup::UNIQUE;
+      } else {
+        info.kind = time_zone::civil_lookup::REPEATED;
+      }
+      if (!result.empty()) {
+        const auto& last_info = result.back();
+        if (last_info.kind == info.kind &&
+            last_info.from.civil_time == info.from.civil_time &&
+            last_info.from.offset_seconds == info.from.offset_seconds &&
+            last_info.from.is_dst == info.from.is_dst &&
+            last_info.to.civil_time == info.to.civil_time &&
+            last_info.to.offset_seconds == info.to.offset_seconds &&
+            last_info.to.is_dst == info.to.is_dst && last_info.tp == info.tp) {
+          // Redundant entry.
+          continue;
+        }
+      }
+      result.push_back(info);
+      last_base_info = transition.to;
+    }
+  }
+  // Remove redundant UNIQUE entries at the beginning.
+  while (!result.empty()) {
+    const auto& front = result.front();
+    if (front.kind != time_zone::civil_lookup::UNIQUE) {
+      break;
+    }
+    result.pop_front();
+  }
+  return result;
+}
+
 class TransitionCache {
  public:
   TransitionCache(std::deque<TimeOffsetInfo> transitions,
@@ -828,11 +873,9 @@ class TransitionCache {
 
 class TimeZoneWinRegistry final : public TimeZoneIf {
  public:
-  TimeZoneWinRegistry(TimeZoneInformationMap timezone_map,
-                      AbbreviationMap abbr_map,
+  TimeZoneWinRegistry(TimeZoneRegistry timezone_map,
                       TransitionCache transition_cache)
       : timezone_map_(std::move(timezone_map)),
-        abbr_map_(std::move(abbr_map)),
         transition_cache_(std::move(transition_cache)) {}
 
   TimeZoneWinRegistry(const TimeZoneWinRegistry&) = delete;
@@ -872,7 +915,7 @@ class TimeZoneWinRegistry final : public TimeZoneIf {
     result.cs = utc + offset_seconds;
     result.offset = offset_seconds;
     result.is_dst = info->is_dst;
-    result.abbr = abbr_map_.GetAbbr(offset_seconds);
+    result.abbr = timezone_map_.GetAbbreviation(offset_seconds);
     return result;
   }
 
@@ -970,8 +1013,7 @@ class TimeZoneWinRegistry final : public TimeZoneIf {
   std::string Description() const override { return std::string(); }
 
  private:
-  const TimeZoneInformationMap timezone_map_;
-  const AbbreviationMap abbr_map_;
+  const TimeZoneRegistry timezone_map_;
   const TransitionCache transition_cache_;
 };
 
@@ -1035,23 +1077,19 @@ std::unique_ptr<TimeZoneIf> MakeTimeZoneIfInternal(const std::string& name) {
     return nullptr;
   }
 
-  REG_TZI_FORMAT base_info;
-  std::vector<REG_TZI_FORMAT> info_list;
-  uint32_t year_list_first_year = 0;
-  uint32_t year_list_last_year = 0;
-  DWORD tz_version = 0;
-  if (!LoadDynamicTimeZoneInformation(win_timezone_name, &base_info, &info_list,
-                                      &year_list_first_year,
-                                      &year_list_last_year, &tz_version)) {
+  TimeZoneRegistry timezone_registry =
+      LoadTimeZoneFromRegistry(win_timezone_name);
+  if (!timezone_registry.IsAvailable()) {
     return nullptr;
   }
-  if (info_list.empty() && base_info.DaylightDate.wMonth == 0 &&
-      base_info.StandardDate.wMonth == 0) {
+
+  if (timezone_registry.IsFixed()) {
+    const auto& base_info = timezone_registry.GetBaseInfo();
     const int32_t offset_seconds = -60 * base_info.Bias;
     const std::string desc =
         "WinRegKey=\"" +
         Utf16ToUtf8(win_timezone_name.c_str(), win_timezone_name.size()) +
-        "\", WinTzVer=" + std::to_string(tz_version);
+        "\", WinTzVer=" + timezone_registry.GetVersionString();
     return std::unique_ptr<TimeZoneIf>(new FixedTimeZone(offset_seconds, desc));
   }
 
@@ -1063,38 +1101,27 @@ std::unique_ptr<TimeZoneIf> MakeTimeZoneIfInternal(const std::string& name) {
   bool starts_with_fixed = false;
   bool ends_with_fixed = false;
 
-  if (!info_list.empty()) {
-    const auto& first_year_info = info_list.front();
-    starts_with_fixed = (first_year_info.StandardDate.wMonth == 0 &&
-                         first_year_info.DaylightDate.wMonth == 0);
-    ends_with_fixed = (info_list.back().StandardDate.wMonth == 0 &&
-                       info_list.back().DaylightDate.wMonth == 0);
+  if (timezone_registry.IsYearDependent()) {
+    starts_with_fixed = timezone_registry.StartsWithFixed();
+    ends_with_fixed = timezone_registry.EndsWithFixed();
     if (starts_with_fixed) {
-      first_year = year_list_first_year;
+      first_year = timezone_registry.GetFirstYear();
     } else {
-      first_year = std::min<year_t>(year_list_first_year - 3, first_year);
+      first_year =
+          std::min<year_t>(timezone_registry.GetFirstYear() - 3, first_year);
     }
     if (ends_with_fixed) {
-      last_year = year_list_last_year + 1;
+      last_year = timezone_registry.GetLastYear() + 1;
     } else {
-      last_year = std::max<year_t>(year_list_last_year + 3, last_year);
+      last_year =
+          std::max<year_t>(timezone_registry.GetLastYear() + 3, last_year);
     }
   }
 
-  TimeZoneInformationMap timezone_info_map =
-      info_list.empty()
-          ? TimeZoneInformationMap(base_info)
-          : TimeZoneInformationMap(base_info, info_list, year_list_first_year,
-                                   year_list_last_year);
-  auto transitions = GetOffsetInfo(timezone_info_map, first_year, last_year);
+  auto transitions = GetOffsetInfo(timezone_registry, first_year, last_year);
 
-  AbbreviationMapBuilder abbr_map_builder;
-  abbr_map_builder.Add(base_info);
-  for (const auto& info : info_list) {
-    abbr_map_builder.Add(info);
-  }
   return std::unique_ptr<TimeZoneWinRegistry>(new TimeZoneWinRegistry(
-      std::move(timezone_info_map), abbr_map_builder.Build(),
+      std::move(timezone_registry),
       TransitionCache(std::move(transitions), starts_with_fixed,
                       ends_with_fixed)));
 }
