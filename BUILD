@@ -58,7 +58,15 @@ cc_library(
         "src/time_zone_posix.h",
         "src/tzfile.h",
         "src/zone_info_source.cc",
-    ],
+    ] + select({
+        "@platforms//os:windows": [
+            "src/icu_win.cc",
+            "src/icu_win.h",
+            "src/time_zone_win.cc",
+            "src/time_zone_win.h",
+        ],
+        "//conditions:default": [],
+    }),
     hdrs = [
         "include/cctz/time_zone.h",
         "include/cctz/zone_info_source.h",
@@ -67,6 +75,7 @@ cc_library(
     linkopts = select({
         "@platforms//os:osx": ["-Wl,-framework,CoreFoundation"],
         "@platforms//os:ios": ["-Wl,-framework,CoreFoundation"],
+        "@platforms//os:windows": ["advapi32.lib"],
         "//conditions:default": [],
     }),
     visibility = ["//visibility:public"],

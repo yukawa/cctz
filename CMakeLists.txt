@@ -85,6 +85,10 @@ add_library(cctz
   src/time_zone_posix.h
   src/tzfile.h
   src/zone_info_source.cc
+  $<IF:$<BOOL:WIN32>,src/icu_win.cc,>
+  $<IF:$<BOOL:WIN32>,src/icu_win.h,>
+  $<IF:$<BOOL:WIN32>,src/time_zone_win.cc,>
+  $<IF:$<BOOL:WIN32>,src/time_zone_win.h,>
   ${CCTZ_HDRS}
   )
 cctz_target_set_cxx_standard(cctz)
@@ -97,6 +101,9 @@ set_target_properties(cctz PROPERTIES
   )
 if(APPLE)
   target_link_libraries(cctz PUBLIC ${CoreFoundation})
+endif()
+if(WIN32)
+  target_link_libraries(cctz PUBLIC advapi32.lib)
 endif()
 add_library(cctz::cctz ALIAS cctz)
 
