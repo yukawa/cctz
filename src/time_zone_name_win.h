@@ -24,6 +24,11 @@ namespace cctz {
 // where "icu.dll" is not available in the System32 directory.
 std::string GetWindowsLocalTimeZone();
 
+// Converts IANA time zone name to Windows time zone ID, or the empty string on
+// failure. Not supported on Windows 10 1809 and earlier, where "icu.dll" is not
+// available in the System32 directory.
+std::wstring ConvertToWindowsTimeZoneId(const std::wstring& iana_name);
+
 }  // namespace cctz
 
 #endif  // CCTZ_TIME_ZONE_NAME_WIN_H_
